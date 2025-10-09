@@ -115,6 +115,14 @@ const ClientsPage = () => {
     }
   };
 
+  // ✅ Status filters (checkboxes)
+  const toggleFilter = (key) => {
+    setStatusFilters((prev) => ({
+      ...prev,
+      [key]: !prev[key],
+    }));
+  };
+
   // ✅ Search
   const [searchTerm, setSearchTerm] = useState("");
   const filteredClients = useMemo(() => {
@@ -132,7 +140,6 @@ const ClientsPage = () => {
       );
     }
 
-    // ✅ Status filters (checkboxes)
     const activeFilters = Object.entries(statusFilters)
       .filter(([_, v]) => v)
       .map(([k]) => k);
@@ -160,7 +167,7 @@ const ClientsPage = () => {
   const pageSize = 10;
 
   // ✅ Reset only on search
-  useMemo(() => {
+  useEffect(() => {
     setCurrentPage(1);
   }, [searchTerm]);
 
