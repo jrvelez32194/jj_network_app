@@ -1,0 +1,2 @@
+docker compose exec jjnotificationservice alembic revision --autogenerate -m "Update Billing Date to nullable"
+docker compose exec jjnotificationservice alembic upgrade head

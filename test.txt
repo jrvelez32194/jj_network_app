@@ -1,0 +1,1 @@
+can you put action and checkbox to this statuses, and if I will check with, it will filter in the table 

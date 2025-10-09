@@ -1,0 +1,66 @@
+version: "3.9"
+services:
+  jj_db:
+    image: arm32v7/postgres:13
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "5432:5432"
+    volumes:
+      - jj_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB} || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  jjnotificationservice:
+    image: jjnotificationservice:arm   # ✅ use prebuilt image
+    container_name: jjnotificationservice
+    restart: always
+    depends_on:
+      jj_db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      DB_HOST: jj_db
+      DB_PORT: 5432
+      DB_USER: ${POSTGRES_USER}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_NAME: ${POSTGRES_DB}
+      ENV: docker
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  jj_pgadmin:
+    image: biarms/pgadmin4
+    restart: always
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@admin.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+    ports:
+      - "5050:80"
+    depends_on:
+      - jj_db
+
+  jjnotificationapp:
+    image: jjnotificationapp:arm   # ✅ use prebuilt image
+    container_name: jjnotificationapp
+    restart: always
+    depends_on:
+      - jjnotificationservice
+    ports:
+      - "80:80"
+    volumes:
+      - ./JJNotificationApp/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+
+volumes:
+  jj_db_data:

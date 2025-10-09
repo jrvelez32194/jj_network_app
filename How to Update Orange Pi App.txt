@@ -1,0 +1,35 @@
+🔄 Workflow to Update Orange Pi with Your Changes
+1. Rebuild images on your PC
+
+In your PC project folder, run:
+
+docker buildx build --platform linux/arm/v7 -t jjnotificationservice:arm ./JJNotificationService --load
+docker buildx build --platform linux/arm/v7 -t jjnotificationapp:arm ./JJNotificationApp --load
+
+
+This rebuilds both frontend & backend images for ARM.
+
+2. Save images to .tar files
+docker save -o jjnotificationservice.tar jjnotificationservice:arm
+docker save -o jjnotificationapp.tar jjnotificationapp:arm
+
+3. Copy to Orange Pi
+scp jjnotificationservice.tar jjnotificationapp.tar root@192.168.4.36:/root/jjnet/
+scp jjnotificationservice.tar root@192.168.4.36:/root/jjnet/
+scp jjnotificationapp.tar root@192.168.4.36:/root/jjnet/
+
+4. Load images on Orange Pi
+
+On the Orange Pi, run:
+
+cd ~/jjnet
+docker compose down
+docker load -i jjnotificationservice.tar
+docker load -i jjnotificationapp.tar
+
+5. Restart the services with new images
+
+Since you already have docker-compose.yml pointing to jjnotificationservice:arm and jjnotificationapp:arm, just restart:
+
+cd ~/jjnet
+docker compose --env-file .env up --build
