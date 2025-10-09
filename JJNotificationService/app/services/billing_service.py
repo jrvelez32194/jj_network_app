@@ -13,7 +13,7 @@ class BillingService:
         self.user = user
         self.password = password
 
-    def run(self):
+    def run(self, mode: str = "enforce"):
         """
         Run the unified billing cycle:
         - Evaluates each client's due/overdue status
@@ -24,7 +24,11 @@ class BillingService:
         mikrotik = MikroTikClient(self.host, self.user, self.password)
 
         try:
-            check_billing(db)
+            if mode not in ("notification", "enforce", "sync"):
+              raise ValueError(
+                f"Invalid mode '{mode}'. Must be 'notification' , 'enforce' or 'sync'.")
+
+            check_billing(db, mode = mode)
             logger.info("✅ Billing job executed successfully")
         except Exception as e:
             logger.error(f"❌ Billing job failed: {e}", exc_info=True)

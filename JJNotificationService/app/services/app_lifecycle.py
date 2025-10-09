@@ -1,6 +1,8 @@
 import os
 import logging
 import threading
+from datetime import datetime
+import pytz
 from apscheduler.schedulers.background import BackgroundScheduler
 from dotenv import load_dotenv
 from app.utils.mikrotik_poll import start_polling, ROUTER_MAP
@@ -12,6 +14,10 @@ logger = logging.getLogger("app_lifecycle")
 
 # ✅ Load .env (important for Docker/local)
 load_dotenv()
+
+# ✅ Global in-memory record for daily notifications
+_last_notification_sent = {}
+_last_lock = threading.Lock()
 
 
 class AppLifecycle:
@@ -68,11 +74,71 @@ class AppLifecycle:
     # 🔹 Scheduler for Billing
     # ------------------------------------------------------------------
     def start_scheduler(self):
-        """Start billing and maintenance schedulers."""
+        """Start billing and maintenance schedulers (with smart in-memory catch-up)."""
+        global _last_notification_sent
+
         try:
-            self.scheduler.add_job(self.billing_service.run, "interval", seconds=10)
+            tz = pytz.timezone("Asia/Manila")
+            now = datetime.now(tz).date()
+
+            # 🧠 Smart catch-up for missed 8 AM notifications
+            with _last_lock:
+                last_sent = _last_notification_sent.get(self.group_name)
+
+                if datetime.now(tz).hour >= 8 and last_sent != now:
+                    logger.info(f"⏰ [{self.group_name}] Missed 8 AM — sending catch-up notification once.")
+                    try:
+                        self.billing_service.run("notification")
+                        _last_notification_sent[self.group_name] = now
+                        logger.info(f"📩 [{self.group_name}] Catch-up notification sent successfully.")
+                    except Exception as e:
+                        logger.error(f"⚠️ [{self.group_name}] Failed catch-up notification: {e}")
+
+            # 🔄 Regular sync every 10s
+            self.scheduler.add_job(
+                self.billing_service.run,
+                "interval",
+                seconds=10,
+                args=["sync"],
+                id=f"billing_sync_{self.group_name}",
+            )
+
+            # 🕗 Daily 8 AM notification (with duplicate check)
+            def daily_notification_wrapper():
+                with _last_lock:
+                    today = datetime.now(tz).date()
+                    if _last_notification_sent.get(self.group_name) != today:
+                        self.billing_service.run("notification")
+                        _last_notification_sent[self.group_name] = today
+                        logger.info(f"📩 [{self.group_name}] Daily 8 AM notification executed.")
+                    else:
+                        logger.info(
+                            f"⏸️ [{self.group_name}] Skipped duplicate 8 AM notification (already sent today)."
+                        )
+
+            self.scheduler.add_job(
+                daily_notification_wrapper,
+                "cron",
+                hour=8,
+                minute=0,
+                id=f"billing_notification_{self.group_name}",
+                misfire_grace_time=3600,
+            )
+
+            # 🕘 Daily 9 AM enforcement
+            self.scheduler.add_job(
+                self.billing_service.run,
+                "cron",
+                hour=9,
+                minute=0,
+                args=["enforce"],
+                id=f"billing_enforce_{self.group_name}",
+                misfire_grace_time=3600,
+            )
+
             self.scheduler.start()
-            logger.info(f"✅ [{self.group_name}] Scheduler started (billing every 10s)")
+            logger.info(f"✅ [{self.group_name}] Scheduler started (smart catch-up + 9 AM enforce)")
+
         except Exception as e:
             logger.error(f"❌ [{self.group_name}] Scheduler failed to start: {e}")
 

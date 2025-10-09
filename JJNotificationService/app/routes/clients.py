@@ -8,9 +8,6 @@ from app.database import SessionLocal
 from app import models, schemas
 from app.websocket_manager import manager
 from app.utils.billing import (
-    apply_billing_to_client,
-    increment_billing_cycle,
-    decrement_billing_cycle,
     handle_paid_client,
     handle_unpaid_client,
 )
@@ -235,7 +232,7 @@ async def set_unpaid_bulk(client_ids: List[int], db: Session = Depends(get_db)):
 
     for client in clients:
         client.status = BillingStatus.UNPAID
-        handle_unpaid_client(db, client)
+        handle_unpaid_client(db, client, "enforce")
 
     await manager.broadcast({
         "event": "billing_update_bulk",
