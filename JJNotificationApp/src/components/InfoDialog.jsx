@@ -1,6 +1,6 @@
 import { useState } from "react";
 
-export function UseToast() {
+export function InfoDialog() {
   const [toast, setToast] = useState(null);
 
   const showToast = (message, type = "success") => {
@@ -12,7 +12,11 @@ export function UseToast() {
     toast ? (
       <div
         className={`fixed bottom-6 right-6 px-4 py-2 rounded shadow-lg text-white ${
-          toast.type === "success" ? "bg-green-600" : "bg-red-600"
+          toast.type === "success"
+            ? "bg-green-600"
+            : toast.type === "error"
+            ? "bg-red-600"
+            : "bg-blue-600"
         }`}
       >
         {toast.message}

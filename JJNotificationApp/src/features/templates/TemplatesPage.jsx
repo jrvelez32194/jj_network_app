@@ -8,7 +8,7 @@ import {
 } from "../templates/templatesApi";
 import AddTemplateDrawer from "./AddTemplateDrawer";
 import ConfirmDialog from "../../components/ConfirmDialog";
-import { UseToast } from "../../components/UseToast";
+import { InfoDialog } from "../../components/InfoDialog";
 import Pagination from "../../components/common/Pagination";
 
 const TemplatesPage = () => {
@@ -26,42 +26,7 @@ const TemplatesPage = () => {
   const [deleteTemplate] = useDeleteTemplateMutation();
   const [deleteTemplates] = useDeleteTemplatesMutation();
 
-  const { showToast, Toast } = UseToast();
-
-  // ✅ Selection
-  const [selectedIds, setSelectedIds] = useState([]);
-  const [allSelected, setAllSelected] = useState(false);
-
-  const toggleSelection = (id) => {
-    setSelectedIds((prev) =>
-      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
-    );
-  };
-
-  const handleSelectAllPage = (checked, pageTemplates) => {
-    if (checked) {
-      const newIds = [
-        ...new Set([...selectedIds, ...pageTemplates.map((t) => t.id)]),
-      ];
-      setSelectedIds(newIds);
-    } else {
-      const newIds = selectedIds.filter(
-        (id) => !pageTemplates.find((t) => t.id === id)
-      );
-      setSelectedIds(newIds);
-      setAllSelected(false);
-    }
-  };
-
-  const handleSelectAllAcrossPages = () => {
-    setSelectedIds(templates.map((t) => t.id));
-    setAllSelected(true);
-  };
-
-  const clearAllSelection = () => {
-    setSelectedIds([]);
-    setAllSelected(false);
-  };
+  const { showToast, Toast } = InfoDialog();
 
   // ✅ Search
   const [searchTerm, setSearchTerm] = useState("");
@@ -103,6 +68,47 @@ const TemplatesPage = () => {
   const handleSearch = (value) => {
     setSearchTerm(value);
     setCurrentPage(1);
+  };
+
+  // ✅ Selection
+  const [selectedIds, setSelectedIds] = useState([]);
+  const [allSelected, setAllSelected] = useState(false);
+
+  const toggleSelection = (id) => {
+    setSelectedIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+    );
+  };
+
+  // ✅ Select all on current page
+  const handleSelectAllPage = (checked, paginatedTemplates) => {
+    if (checked) {
+      const pageIds = paginatedTemplates.map((c) => c.id);
+      setSelectedIds((prev) => [...new Set([...prev, ...pageIds])]);
+    } else {
+      const pageIds = paginatedTemplates.map((c) => c.id);
+      setSelectedIds((prev) => prev.filter((id) => !pageIds.includes(id)));
+    }
+  };
+
+  // ✅ Select all across filtered results (not all records)
+  const handleSelectAllAcrossPages = () => {
+    const allFilteredIds = filteredTemplates.map((c) => c.id);
+    setSelectedIds(allFilteredIds);
+    setAllSelected(true);
+  };
+
+  // ✅ Optional: Select absolutely all template
+  const handleSelectAll = () => {
+    const allIds = templates.map((c) => c.id);
+    setSelectedIds(allIds);
+    setAllSelected(true);
+  };
+
+  // ✅ Deselect everything
+  const clearAllSelection = () => {
+    setSelectedIds([]);
+    setAllSelected(false);
   };
 
   // ✅ Save template
@@ -215,24 +221,57 @@ const TemplatesPage = () => {
             🗑 Delete {selectedIds.length > 0 && `(${selectedIds.length})`}
           </button>
 
-          {/* ✅ Select Across Pages */}
-          {selectedIds.length > 0 && !allSelected && (
-            <button
-              onClick={handleSelectAllAcrossPages}
-              className="px-3 py-2 text-sm bg-gray-200 rounded hover:bg-gray-300"
-            >
-              Select all {templates.length} templates
-            </button>
-          )}
-          {allSelected && (
-            <button
-              onClick={clearAllSelection}
-              className="px-3 py-2 text-sm bg-gray-200 rounded hover:bg-gray-300"
-            >
-              Clear selection
-            </button>
+          {/* ✅ Selection controls remain for Desktop */}
+          {selectedIds.length > 0 && (
+            <div className="hidden sm:flex flex-wrap justify-between items-center gap-2 mb-6 px-2">
+              <div className="text-sm text-gray-700">
+                Selected {selectedIds.length} client
+                {selectedIds.length > 1 ? "s" : ""}
+              </div>
+
+              <div className="flex gap-2">
+                {/* ✅ Select all on current page */}
+                <button
+                  onClick={() => handleSelectAllPage(true, paginatedTemplates)}
+                  className="bg-gray-500 hover:bg-gray-600 text-white px-3 py-1 rounded text-sm"
+                >
+                  Select All (Page)
+                </button>
+
+                {/* ✅ Select across all filtered pages */}
+                {!allSelected && (
+                  <button
+                    onClick={handleSelectAllAcrossPages}
+                    className="bg-blue-500 hover:bg-blue-600 text-white px-3 py-1 rounded text-sm"
+                  >
+                    Select Across Pages ({filteredTemplates.length})
+                  </button>
+                )}
+
+                {/* ✅ Optional: Select absolutely all template */}
+                {!allSelected && (
+                  <button
+                    onClick={handleSelectAll}
+                    className="bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-1 rounded text-sm"
+                  >
+                    Select All ({templates.length})
+                  </button>
+                )}
+
+                {/* ✅ Deselect everything */}
+                {allSelected && (
+                  <button
+                    onClick={clearAllSelection}
+                    className="bg-gray-500 hover:bg-gray-600 text-white px-3 py-1 rounded text-sm"
+                  >
+                    Clear All
+                  </button>
+                )}
+              </div>
+            </div>
           )}
         </div>
+
         <button
           onClick={() => {
             setEditingTemplate(null);
@@ -339,38 +378,54 @@ const TemplatesPage = () => {
           {/* 🚫 Removed mobile Add button (FAB replaces this) */}
         </div>
 
-        <div className="flex items-center gap-2 bg-gray-100 px-3 py-2 rounded shadow-sm">
-          <input
-            type="checkbox"
-            checked={
-              paginatedTemplates.every((t) => selectedIds.includes(t.id)) &&
-              paginatedTemplates.length > 0
-            }
-            onChange={(e) =>
-              handleSelectAllPage(e.target.checked, paginatedTemplates)
-            }
-            className="w-4 h-4"
-          />
-          <span className="text-sm text-gray-700">Select all on this page</span>
-        </div>
+        <div className="flex items-center justify-between bg-gray-50 px-3 py-2 rounded-lg shadow-sm border border-gray-200">
+          <label className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              checked={
+                paginatedTemplates.every((t) => selectedIds.includes(t.id)) &&
+                paginatedTemplates.length > 0
+              }
+              onChange={(e) =>
+                handleSelectAllPage(e.target.checked, paginatedTemplates)
+              }
+              className="w-4 h-4"
+            />
+            <span className="text-sm text-gray-700">
+              Select all on this page
+            </span>
+          </label>
 
-        {/* ✅ Select All Across Pages */}
-        {selectedIds.length > 0 && !allSelected && (
-          <button
-            onClick={handleSelectAllAcrossPages}
-            className="px-3 py-2 text-sm bg-gray-200 rounded hover:bg-gray-300"
-          >
-            Select all {templates.length} templates
-          </button>
-        )}
-        {allSelected && (
-          <button
-            onClick={clearAllSelection}
-            className="px-3 py-2 text-sm bg-gray-200 rounded hover:bg-gray-300"
-          >
-            Clear selection
-          </button>
-        )}
+          {/* ✅ When some are selected, offer “Select Across Pages” */}
+          {selectedIds.length > 0 && !allSelected && (
+            <button
+              onClick={handleSelectAllAcrossPages}
+              className="text-xs bg-blue-100 text-blue-700 px-2.5 py-1 rounded-md hover:bg-blue-200 transition"
+            >
+              Select Across Pages ({filteredTemplates.length})
+            </button>
+          )}
+
+          {/* ✅ Optional — Select ALL records (no filter) */}
+          {selectedIds.length > 0 && !allSelected && (
+            <button
+              onClick={handleSelectAll}
+              className="text-xs bg-indigo-100 text-indigo-700 px-2.5 py-1 rounded-md hover:bg-indigo-200 transition"
+            >
+              Select All ({templates.length})
+            </button>
+          )}
+
+          {/* ✅ Deselect all */}
+          {allSelected && (
+            <button
+              onClick={clearAllSelection}
+              className="text-xs bg-gray-100 text-gray-700 px-2.5 py-1 rounded-md hover:bg-gray-200 transition"
+            >
+              Clear
+            </button>
+          )}
+        </div>
       </div>
 
       {/* ✅ Mobile Card View */}

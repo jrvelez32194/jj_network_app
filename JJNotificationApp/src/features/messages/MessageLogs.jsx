@@ -6,11 +6,11 @@ import {
   useDeleteAllMessageLogsMutation,
 } from "../messages/messageLogsApi";
 import ConfirmDialog from "../../components/ConfirmDialog";
-import { UseToast } from "../../components/UseToast";
+import { InfoDialog } from "../../components/InfoDialog";
 import Pagination from "../../components/common/Pagination";
 
 export default function MessageLogs() {
-  const { showToast, Toast } = UseToast();
+  const { showToast, Toast } = InfoDialog();
 
   // ✅ Selection state
   const [selectedIds, setSelectedIds] = useState([]);

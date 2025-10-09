@@ -18,7 +18,7 @@ import { useSendToClientsMutation } from "../messages/messagesApi";
 import AddClientDrawer from "./AddClientDrawer";
 import ConfirmDialog from "../../components/ConfirmDialog";
 import SendDialog from "../../components/SendDialog";
-import { UseToast } from "../../components/UseToast";
+import { InfoDialog } from "../../components/InfoDialog";
 import { useWebSocketManager } from "../../hooks/useWebSocketManager";
 
 const ClientsPage = () => {
@@ -44,7 +44,7 @@ const ClientsPage = () => {
   const [setPaid] = useSetPaidMutation();
   const [setUnpaidBulk] = useSetUnpaidBulkMutation();
   const [setUnpaid] = useSetUnpaidMutation();
-  const { showToast, Toast } = UseToast();
+  const { showToast, Toast } = InfoDialog();
   const [fabOpen, setFabOpen] = useState(false);
 
   // ✅ Count client states and statuses
@@ -69,53 +69,10 @@ const ClientsPage = () => {
   const unpaidCount = clients.filter((c) => c.status === "UNPAID").length;
   const limitedCount = clients.filter((c) => c.status === "LIMITED").length;
   const cutoffCount = clients.filter((c) => c.status === "CUTOFF").length;
-  const unknownBillingCount = clients.filter((c) => !c.billing_date).length;
 
   const dispatch = useDispatch();
 
   useWebSocketManager({ showToast, dispatch, refetch });
-
-  // ✅ Selection
-  const [selectedIds, setSelectedIds] = useState([]);
-  const [allSelected, setAllSelected] = useState(false);
-
-  const toggleSelection = (id) => {
-    setSelectedIds((prev) =>
-      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
-    );
-  };
-
-  const toggleFilter = (key) => {
-    setStatusFilters((prev) => ({
-      ...prev,
-      [key]: !prev[key],
-    }));
-  };
-
-  const handleSelectAllPage = (checked, pageClients) => {
-    if (checked) {
-      const newIds = [
-        ...new Set([...selectedIds, ...pageClients.map((c) => c.id)]),
-      ];
-      setSelectedIds(newIds);
-    } else {
-      const newIds = selectedIds.filter(
-        (id) => !pageClients.find((c) => c.id === id)
-      );
-      setSelectedIds(newIds);
-      setAllSelected(false);
-    }
-  };
-
-  const handleSelectAllAcrossPages = () => {
-    setSelectedIds(clients.map((c) => c.id));
-    setAllSelected(true);
-  };
-
-  const clearAllSelection = () => {
-    setSelectedIds([]);
-    setAllSelected(false);
-  };
 
   const handleSetPaid = async (id) => {
     try {
@@ -230,6 +187,57 @@ const ClientsPage = () => {
   const handleSearch = (value) => {
     setSearchTerm(value);
     setCurrentPage(1);
+  };
+
+  // ✅ Selection
+  const [selectedIds, setSelectedIds] = useState([]);
+  const [allSelected, setAllSelected] = useState(false);
+
+  // Toggle individual selection
+  const toggleSelection = (id) => {
+    setSelectedIds((prev) => {
+      const newSelected = prev.includes(id)
+        ? prev.filter((x) => x !== id)
+        : [...prev, id];
+
+      // if user unchecks any id, remove global select-all
+      if (allSelected && !newSelected.includes(id)) {
+        setAllSelected(false);
+      }
+
+      return newSelected;
+    });
+  };
+
+  // ✅ Select all on current page
+  const handleSelectAllPage = (checked, pageClients) => {
+    if (checked) {
+      const pageIds = pageClients.map((c) => c.id);
+      setSelectedIds((prev) => [...new Set([...prev, ...pageIds])]);
+    } else {
+      const pageIds = pageClients.map((c) => c.id);
+      setSelectedIds((prev) => prev.filter((id) => !pageIds.includes(id)));
+    }
+  };
+
+  // ✅ Select all across filtered results (not all records)
+  const handleSelectAllAcrossPages = () => {
+    const allFilteredIds = filteredClients.map((c) => c.id);
+    setSelectedIds(allFilteredIds);
+    setAllSelected(true);
+  };
+
+  // ✅ Optional: Select absolutely all clients
+  const handleSelectAll = () => {
+    const allIds = clients.map((c) => c.id);
+    setSelectedIds(allIds);
+    setAllSelected(true);
+  };
+
+  // ✅ Deselect everything
+  const clearAllSelection = () => {
+    setSelectedIds([]);
+    setAllSelected(false);
   };
 
   // ✅ Save client
@@ -496,15 +504,38 @@ const ClientsPage = () => {
             Selected {selectedIds.length} client
             {selectedIds.length > 1 ? "s" : ""}
           </div>
+
           <div className="flex gap-2">
-            {!allSelected ? (
+            {/* ✅ Select all on current page */}
+            <button
+              onClick={() => handleSelectAllPage(true, paginatedClients)}
+              className="bg-gray-500 hover:bg-gray-600 text-white px-3 py-1 rounded text-sm"
+            >
+              Select All (Page)
+            </button>
+
+            {/* ✅ Select across all filtered pages */}
+            {!allSelected && (
               <button
                 onClick={handleSelectAllAcrossPages}
                 className="bg-blue-500 hover:bg-blue-600 text-white px-3 py-1 rounded text-sm"
               >
+                Select Across Pages ({filteredClients.length})
+              </button>
+            )}
+
+            {/* ✅ Optional: Select absolutely all clients */}
+            {!allSelected && (
+              <button
+                onClick={handleSelectAll}
+                className="bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-1 rounded text-sm"
+              >
                 Select All ({clients.length})
               </button>
-            ) : (
+            )}
+
+            {/* ✅ Deselect everything */}
+            {allSelected && (
               <button
                 onClick={clearAllSelection}
                 className="bg-gray-500 hover:bg-gray-600 text-white px-3 py-1 rounded text-sm"
@@ -519,6 +550,7 @@ const ClientsPage = () => {
       {/* ✅ Mobile Selection Controls */}
       <div className="sm:hidden mb-3">
         <div className="flex items-center justify-between bg-gray-50 px-3 py-2 rounded-lg shadow-sm border border-gray-200">
+          {/* ✅ Select all on current page */}
           <label className="flex items-center gap-2">
             <input
               type="checkbox"
@@ -536,15 +568,27 @@ const ClientsPage = () => {
             </span>
           </label>
 
+          {/* ✅ When some are selected, offer “Select Across Pages” */}
           {selectedIds.length > 0 && !allSelected && (
             <button
               onClick={handleSelectAllAcrossPages}
               className="text-xs bg-blue-100 text-blue-700 px-2.5 py-1 rounded-md hover:bg-blue-200 transition"
             >
-              Select all {clients.length}
+              Select Across Pages ({filteredClients.length})
             </button>
           )}
 
+          {/* ✅ Optional — Select ALL records (no filter) */}
+          {selectedIds.length > 0 && !allSelected && (
+            <button
+              onClick={handleSelectAll}
+              className="text-xs bg-indigo-100 text-indigo-700 px-2.5 py-1 rounded-md hover:bg-indigo-200 transition"
+            >
+              Select All ({clients.length})
+            </button>
+          )}
+
+          {/* ✅ Deselect all */}
           {allSelected && (
             <button
               onClick={clearAllSelection}
@@ -928,33 +972,6 @@ const ClientsPage = () => {
         currentPage={currentPage}
         setCurrentPage={setCurrentPage}
       />
-
-      {/* ✅ Floating Add Button */}
-      {/* <div className="sm:hidden fixed bottom-2 right-6 z-50">
-        <button
-          onClick={() => {
-            setEditingClient(null);
-            setIsDrawerOpen(true);
-          }}
-          className="w-14 h-14 flex items-center justify-center rounded-full bg-blue-600 text-white shadow-lg hover:bg-blue-700 transition"
-        >
-          ➕
-        </button>
-      </div> */}
-
-      {/* ✅ Floating Sync Button (Mobile) */}
-      {/* <div className="sm:hidden fixed bottom-20 right-6 z-50">
-        <button
-          onClick={handleSyncClients}
-          disabled={isSyncing}
-          className={`w-14 h-14 flex items-center justify-center rounded-full shadow-lg transition
-      ${
-        isSyncing ? "bg-purple-400" : "bg-purple-600 hover:bg-purple-700"
-      } text-white`}
-        >
-          {isSyncing ? "⏳" : "🔄"}
-        </button>
-      </div> */}
 
       {/* ✅ Modals */}
       <AddClientDrawer
