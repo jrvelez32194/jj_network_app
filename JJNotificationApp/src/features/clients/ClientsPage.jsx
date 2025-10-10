@@ -130,14 +130,35 @@ const ClientsPage = () => {
 
     // 🔍 Search filter
     if (searchTerm) {
-      result = result.filter(
-        (c) =>
-          c.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-          c.messenger_id?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-          c.group_name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-          c.connection_name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-          c.state?.toLowerCase().includes(searchTerm.toLowerCase())
-      );
+      const terms = searchTerm
+        .split(",")
+        .map((t) => t.trim().toLowerCase())
+        .filter((t) => t.length > 0);
+
+      result = result.filter((c) => {
+        const id = c.id?.toString().toLowerCase() || "";
+        const name = c.name?.toLowerCase() || "";
+        const messenger_id = c.messenger_id?.toLowerCase() || "";
+        const group_name = c.group_name?.toLowerCase() || "";
+        const connection_name = c.connection_name?.toLowerCase() || "";
+        const state = c.state?.toLowerCase() || "";
+        const status = c.status?.toLowerCase() || "";
+
+        return terms.some((term) => {
+          // ✅ group_name must match exactly
+          if (group_name === term) return true;
+
+          // ✅ all other fields can match partially
+          return (
+            id.includes(term) ||
+            name.includes(term) ||
+            messenger_id.includes(term) ||
+            connection_name.includes(term) ||
+            state.includes(term) ||
+            status.includes(term)
+          );
+        });
+      });
     }
 
     const activeFilters = Object.entries(statusFilters)

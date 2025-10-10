@@ -1,4 +1,7 @@
-THROTTLE_NOTICE = """\
+# messages.py
+
+# --- Default Messages ---
+THROTTLE_NOTICE_TEMPLATE = """\
 NOTICE OF THROTTLE
 
 Dear Valued Client,
@@ -18,7 +21,7 @@ Best regards,
 JJ Internet Service
 """
 
-DISCONNECTION_NOTICE = """\
+DISCONNECTION_NOTICE_TEMPLATE = """\
 NOTICE OF SERVICE DISCONNECTION
 
 Dear Valued Client,
@@ -37,7 +40,7 @@ Sincerely,
 JJ Internet Service
 """
 
-DUE_NOTICE = """
+DUE_NOTICE_TEMPLATE = """\
 Good day!
 
 This is a friendly reminder that your internet account payment is due on {due_date}, amounting to {amount:,.2f} pesos only.
@@ -57,8 +60,31 @@ Payment Options:
 Note: Please send me a screenshot of your gcash transaction for us to verify.
 
 🏡 Cash Payment
-You may also pay in person at our residence in Sitio Coronado, Malalag Cogon.
+You may also pay in person at {payment_location}.
 
 Thank you from @JJNet.
 """
 
+
+# --- Function to get the proper messages based on group/location ---
+def get_messages(group_name: str):
+  """Return customized notices depending on client location."""
+
+  # Default values (G1)
+  payment_location = "Sitio Coronado, Malalag Cogon"
+
+  if "Aliwanay" in group_name or "Surallah" in group_name or "Velez" in group_name:
+    payment_location = "Sitio Aliwanay, Naci, Surallah, at Velez Compound"
+
+  # Inject location into DUE_NOTICE
+  due_notice = DUE_NOTICE_TEMPLATE.format(
+    due_date="{due_date}",
+    amount="{amount}",
+    payment_location=payment_location,
+  )
+
+  return {
+    "THROTTLE_NOTICE": THROTTLE_NOTICE_TEMPLATE,
+    "DISCONNECTION_NOTICE": DISCONNECTION_NOTICE_TEMPLATE,
+    "DUE_NOTICE": due_notice,
+  }

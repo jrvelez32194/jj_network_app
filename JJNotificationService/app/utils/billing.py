@@ -11,7 +11,7 @@ from app.models import Client, BillingStatus
 from app.utils.mikrotik_config import MikroTikClient
 from app.websocket_manager import manager
 from app.utils.messenger import send_message
-from app.utils.messages import THROTTLE_NOTICE, DISCONNECTION_NOTICE, DUE_NOTICE
+from app.utils.messages import get_messages
 
 logger = logging.getLogger("billing")
 
@@ -19,7 +19,7 @@ PH_TZ = pytz.timezone("Asia/Manila")
 BILLING_FILTER = os.getenv("BILLING_FILTER", "PRIVATE").upper()
 
 # =====================================================
-# ✅ Router Management (Enhanced JSON + Alias Support)
+# ✅ Router Management
 # =====================================================
 
 def load_all_mikrotiks():
@@ -47,30 +47,24 @@ def load_all_mikrotiks():
 
 
 def get_router_for_client(client: Client, routers: list[dict]):
-    """Select router based on client's group_name or connection_name, with alias support."""
+    """Select router based on client's group_name or connection_name."""
     if not routers:
         return None
 
-    group_name = getattr(client, "group_name", "") or ""
-    group_name = group_name.upper().strip()
+    group_name = (client.group_name or "").upper().strip()
 
-    # 🟢 Add special alias handling
-    # PRIVATE-CALERIO → G2
-    if group_name == "PRIVATE-CALERIO":
-        group_name = "G2"
-
-    # Match router group
+    # ✅ Direct match only — no alias remapping
     for r in routers:
         if r["group"].upper() == group_name:
             return r["client"]
 
-    # Fallback: match by IP in connection_name
+    # Fallback: match by IP/host in connection_name
     if client.connection_name:
         for r in routers:
             if r["client"].host in client.connection_name:
                 return r["client"]
 
-    # Default to first router
+    # Default fallback
     return routers[0]["client"]
 
 # =====================================================
@@ -94,6 +88,9 @@ def enforce_billing_rules(
         return
 
     try:
+        # 🟢 Dynamic messages by group
+        messages = get_messages(client.group_name or "")
+
         # --- PAID ---
         if client.status == BillingStatus.PAID:
             if mode == "sync" and client.speed_limit != "Unlimited":
@@ -112,7 +109,7 @@ def enforce_billing_rules(
             if mode == "notification":
                 send_message(
                     client.messenger_id,
-                    DUE_NOTICE.format(
+                    messages["DUE_NOTICE"].format(
                         due_date=last_billing_date.strftime("%B %d, %Y"),
                         amount=client.amt_monthly,
                     ),
@@ -127,7 +124,7 @@ def enforce_billing_rules(
                 mikrotik.set_speed_limit(client.connection_name, "5M/5M")
 
             if mode == "notification":
-                send_message(client.messenger_id, THROTTLE_NOTICE)
+                send_message(client.messenger_id, messages["THROTTLE_NOTICE"])
             return
 
         # --- CUTOFF (7+ days overdue) ---
@@ -139,7 +136,7 @@ def enforce_billing_rules(
                 mikrotik.set_speed_limit(client.connection_name, "0M/0M")
 
             if mode == "notification":
-                send_message(client.messenger_id, DISCONNECTION_NOTICE)
+                send_message(client.messenger_id, messages["DISCONNECTION_NOTICE"])
 
     except Exception as e:
         logger.error(f"Billing rule failed for {client.name}: {e}")
@@ -257,8 +254,8 @@ def handle_paid_client(db: Session, client: Client):
             logger.info(
               f"⚠️ Client {client.name} marked as PAID and billing reapplied.")
     except Exception as e:
-      db.rollback()
-      logger.error(f"Failed to handle paid client {client.name}: {e}")
+        db.rollback()
+        logger.error(f"Failed to handle paid client {client.name}: {e}")
 
 def handle_unpaid_client(db: Session, client: Client, mode: str = "enforce"):
     """Handle a client being marked UNPAID — reapply billing rules."""
