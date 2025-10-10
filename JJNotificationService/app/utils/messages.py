@@ -1,4 +1,5 @@
-# messages.py
+import logging
+logger = logging.getLogger("billing")
 
 # --- Default Messages ---
 THROTTLE_NOTICE_TEMPLATE = """\
@@ -65,26 +66,37 @@ You may also pay in person at {payment_location}.
 Thank you from @JJNet.
 """
 
+# =====================================================
+# ✅ Safe Message Formatter
+# =====================================================
+def safe_format(template: str, **kwargs) -> str:
+    """
+    Safely formats message templates to prevent crashes when placeholders
+    or format types are incorrect (e.g., '{amount:.2f}' on a string).
+    """
+    try:
+        return template.format(**kwargs)
+    except Exception as e:
+        logger.error(
+            f"⚠️ Message format error: {e} | Template: {template[:100]}... | Data: {kwargs}"
+        )
+        return template  # Return unformatted message to avoid breaking billing
 
-# --- Function to get the proper messages based on group/location ---
+# =====================================================
+# ✅ Get messages by group/location
+# =====================================================
 def get_messages(group_name: str):
-  """Return customized notices depending on client location."""
+    """Return customized notices depending on client location."""
+    payment_location = "Sitio Coronado, Malalag Cogon"
 
-  # Default values (G1)
-  payment_location = "Sitio Coronado, Malalag Cogon"
+    if any(keyword in group_name for keyword in ["Aliwanay", "Surallah", "Velez"]):
+        payment_location = "Sitio Aliwanay, Naci, Surallah, at Velez Compound"
 
-  if "Aliwanay" in group_name or "Surallah" in group_name or "Velez" in group_name:
-    payment_location = "Sitio Aliwanay, Naci, Surallah, at Velez Compound"
+    # ✅ Fix: only replace the static text, do NOT pre-format the template
+    due_notice = DUE_NOTICE_TEMPLATE.replace("{payment_location}", payment_location)
 
-  # Inject location into DUE_NOTICE
-  due_notice = DUE_NOTICE_TEMPLATE.format(
-    due_date="{due_date}",
-    amount="{amount}",
-    payment_location=payment_location,
-  )
-
-  return {
-    "THROTTLE_NOTICE": THROTTLE_NOTICE_TEMPLATE,
-    "DISCONNECTION_NOTICE": DISCONNECTION_NOTICE_TEMPLATE,
-    "DUE_NOTICE": due_notice,
-  }
+    return {
+        "THROTTLE_NOTICE": THROTTLE_NOTICE_TEMPLATE,
+        "DISCONNECTION_NOTICE": DISCONNECTION_NOTICE_TEMPLATE,
+        "DUE_NOTICE": due_notice,
+    }

@@ -11,7 +11,7 @@ from app.models import Client, BillingStatus
 from app.utils.mikrotik_config import MikroTikClient
 from app.websocket_manager import manager
 from app.utils.messenger import send_message
-from app.utils.messages import get_messages
+from app.utils.messages import get_messages, safe_format
 
 logger = logging.getLogger("billing")
 
@@ -87,8 +87,14 @@ def enforce_billing_rules(
     if days_overdue < 0:
         return
 
+    def safe_float(value):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 0.0
+
     try:
-        # 🟢 Dynamic messages by group
+        # ✅ Dynamic message templates
         messages = get_messages(client.group_name or "")
 
         # --- PAID ---
@@ -107,13 +113,19 @@ def enforce_billing_rules(
                 mikrotik.set_speed_limit(client.connection_name, "Unlimited")
 
             if mode == "notification":
-                send_message(
-                    client.messenger_id,
-                    messages["DUE_NOTICE"].format(
-                        due_date=last_billing_date.strftime("%B %d, %Y"),
-                        amount=client.amt_monthly,
-                    ),
+                amount_value = safe_float(client.amt_monthly)
+                logger.debug(
+                    f"[DEBUG] {client.name} amt_monthly={client.amt_monthly!r} → safe_float={amount_value!r}"
                 )
+
+                # ✅ Safe message formatting using safe_format()
+                message_text = safe_format(
+                    messages["DUE_NOTICE"],
+                    due_date=last_billing_date.strftime("%B %d, %Y"),
+                    amount=amount_value,
+                )
+
+                send_message(client.messenger_id, message_text)
             return
 
         # --- LIMITED (4–6 days overdue) ---
@@ -144,6 +156,9 @@ def enforce_billing_rules(
         db.add(client)
         db.commit()
 
+# =====================================================
+# ✅ Safe Broadcast Utility
+# =====================================================
 
 def safe_broadcast(message: dict):
     """Broadcast WebSocket message safely."""
@@ -153,6 +168,9 @@ def safe_broadcast(message: dict):
     except RuntimeError:
         asyncio.run(manager.broadcast(message))
 
+# =====================================================
+# ✅ Main Billing Cycle
+# =====================================================
 
 def check_billing(db: Session, mode: str = "enforce"):
     """Run billing cycle for all clients across routers."""
@@ -183,7 +201,7 @@ def check_billing(db: Session, mode: str = "enforce"):
             client, mikrotik, days_overdue, last_billing_date, db, mode
         )
 
-        # Only broadcast when enforcing
+        # Broadcast if changed
         if mode == "enforce" and client.status != old_status:
             safe_broadcast({
                 "event": "billing_update",
@@ -195,9 +213,11 @@ def check_billing(db: Session, mode: str = "enforce"):
 
     db.commit()
 
+# =====================================================
+# ✅ Apply Billing for One Client
+# =====================================================
 
 def apply_billing_to_client(db: Session, client: Client, mode: str = "enforce"):
-    """Apply billing rules for a single client."""
     today = datetime.now(PH_TZ).date()
     routers = load_all_mikrotiks()
     mikrotik = get_router_for_client(client, routers)
@@ -221,7 +241,7 @@ def apply_billing_to_client(db: Session, client: Client, mode: str = "enforce"):
     db.commit()
 
 # =====================================================
-# ✅ Billing Actions
+# ✅ Billing Actions (Paid / Unpaid)
 # =====================================================
 
 def increment_billing_cycle(client: Client):
@@ -241,26 +261,25 @@ def handle_paid_client(db: Session, client: Client):
     try:
         if client.speed_limit != "Unlimited":
             client.speed_limit = "Unlimited"
-            increment_billing_cycle(client)
-            apply_billing_to_client(db, client, "enforce")
-            db.refresh(client)
-            safe_broadcast({
-              "event": "billing_update",
-              "client_id": client.id,
-              "status": client.status.value if hasattr(client.status, "value") else client.status,
-              "billing_date": client.billing_date.isoformat() if client.billing_date else None,
-              "local_time": datetime.now(PH_TZ).strftime("%Y-%m-%d %H:%M:%S %Z"),
-            })
-            logger.info(
-              f"⚠️ Client {client.name} marked as PAID and billing reapplied.")
+        increment_billing_cycle(client)
+        apply_billing_to_client(db, client, "enforce")
+        db.refresh(client)
+        safe_broadcast({
+            "event": "billing_update",
+            "client_id": client.id,
+            "status": client.status.value if hasattr(client.status, "value") else client.status,
+            "billing_date": client.billing_date.isoformat() if client.billing_date else None,
+            "local_time": datetime.now(PH_TZ).strftime("%Y-%m-%d %H:%M:%S %Z"),
+        })
+        logger.info(f"✅ Client {client.name} marked as PAID and billing reapplied.")
     except Exception as e:
         db.rollback()
         logger.error(f"Failed to handle paid client {client.name}: {e}")
 
+
 def handle_unpaid_client(db: Session, client: Client, mode: str = "enforce"):
     """Handle a client being marked UNPAID — reapply billing rules."""
     try:
-        decrement_billing_cycle(client)
         apply_billing_to_client(db, client, mode)
         db.refresh(client)
         safe_broadcast({
