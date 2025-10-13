@@ -18,12 +18,12 @@ logger = logging.getLogger("billing")
 PH_TZ = pytz.timezone("Asia/Manila")
 BILLING_FILTER = os.getenv("BILLING_FILTER", "PRIVATE").upper()
 
+
 # =====================================================
 # ✅ Router Management
 # =====================================================
 
 def load_all_mikrotiks():
-    """Load all MikroTik routers from ROUTER_MAP_JSON in .env"""
     routers = []
     router_map_str = os.getenv("ROUTER_MAP_JSON", "{}")
 
@@ -53,19 +53,17 @@ def get_router_for_client(client: Client, routers: list[dict]):
 
     group_name = (client.group_name or "").upper().strip()
 
-    # ✅ Direct match only — no alias remapping
     for r in routers:
         if r["group"].upper() == group_name:
             return r["client"]
 
-    # Fallback: match by IP/host in connection_name
     if client.connection_name:
         for r in routers:
             if r["client"].host in client.connection_name:
                 return r["client"]
 
-    # Default fallback
     return routers[0]["client"]
+
 
 # =====================================================
 # ✅ Core Billing Logic
@@ -85,6 +83,7 @@ def enforce_billing_rules(
 ):
     """Apply billing rules based on overdue days and mode ('notification' or 'enforce')."""
     if days_overdue < 0:
+        logger.info(f"💰 [{client.name}] Paid in advance — next billing will apply on {last_billing_date}.")
         return
 
     def safe_float(value):
@@ -94,38 +93,42 @@ def enforce_billing_rules(
             return 0.0
 
     try:
-        # ✅ Dynamic message templates
         messages = get_messages(client.group_name or "")
 
-        # --- PAID ---
-        if client.status == BillingStatus.PAID:
-            if mode == "sync" and client.speed_limit != "Unlimited":
-                client.speed_limit = "Unlimited"
-                mikrotik.unblock_client(client.connection_name)
-                mikrotik.set_speed_limit(client.connection_name, "Unlimited")
-            return
-
         # --- DUE TODAY ---
-        if days_overdue == 0 and client.status != BillingStatus.UNPAID:
+        if days_overdue == 0:
             if mode == "enforce":
-                client.status = BillingStatus.UNPAID
-                mikrotik.unblock_client(client.connection_name)
-                mikrotik.set_speed_limit(client.connection_name, "Unlimited")
+                if client.status != BillingStatus.UNPAID:
+                    client.status = BillingStatus.UNPAID
+                    mikrotik.unblock_client(client.connection_name)
+                    mikrotik.set_speed_limit(client.connection_name, "Unlimited")
+                    logger.info(f"🔄 [{client.name}] Status set to UNPAID (due today).")
 
             if mode == "notification":
                 amount_value = safe_float(client.amt_monthly)
-                logger.debug(
-                    f"[DEBUG] {client.name} amt_monthly={client.amt_monthly!r} → safe_float={amount_value!r}"
-                )
-
-                # ✅ Safe message formatting using safe_format()
                 message_text = safe_format(
                     messages["DUE_NOTICE"],
                     due_date=last_billing_date.strftime("%B %d, %Y"),
                     amount=amount_value,
                 )
-
                 send_message(client.messenger_id, message_text)
+                logger.info(f"📩 [{client.name}] DUE notice sent.")
+            return
+
+        # --- PAID STATUS CHECK ---
+        if client.status == BillingStatus.PAID:
+            if days_overdue >= 0:
+                client.status = BillingStatus.UNPAID
+                mikrotik.unblock_client(client.connection_name)
+                mikrotik.set_speed_limit(client.connection_name, "Unlimited")
+                logger.info(f"⚠️ [{client.name}] Payment period ended — reverted to UNPAID ({days_overdue}d).")
+                return
+
+            if mode in ["sync", "enforce"] and client.speed_limit != "Unlimited":
+                mikrotik.unblock_client(client.connection_name)
+                mikrotik.set_speed_limit(client.connection_name, "Unlimited")
+                client.speed_limit = "Unlimited"
+                logger.info(f"✅ [{client.name}] Synced: speed reset to Unlimited.")
             return
 
         # --- LIMITED (4–6 days overdue) ---
@@ -134,9 +137,11 @@ def enforce_billing_rules(
                 client.status = BillingStatus.LIMITED
                 client.speed_limit = "5M/5M"
                 mikrotik.set_speed_limit(client.connection_name, "5M/5M")
+                logger.info(f"⚠️ [{client.name}] Enforced limited speed (5M/5M).")
 
             if mode == "notification":
                 send_message(client.messenger_id, messages["THROTTLE_NOTICE"])
+                logger.info(f"📩 [{client.name}] Throttle notice sent.")
             return
 
         # --- CUTOFF (7+ days overdue) ---
@@ -146,9 +151,11 @@ def enforce_billing_rules(
                 client.speed_limit = "0M/0M"
                 mikrotik.block_client(client.connection_name)
                 mikrotik.set_speed_limit(client.connection_name, "0M/0M")
+                logger.info(f"⛔ [{client.name}] Client cutoff enforced.")
 
             if mode == "notification":
                 send_message(client.messenger_id, messages["DISCONNECTION_NOTICE"])
+                logger.info(f"📩 [{client.name}] Disconnection notice sent.")
 
     except Exception as e:
         logger.error(f"Billing rule failed for {client.name}: {e}")
@@ -156,52 +163,73 @@ def enforce_billing_rules(
         db.add(client)
         db.commit()
 
+
 # =====================================================
 # ✅ Safe Broadcast Utility
 # =====================================================
 
 def safe_broadcast(message: dict):
-    """Broadcast WebSocket message safely."""
     try:
         loop = asyncio.get_running_loop()
         loop.create_task(manager.broadcast(message))
     except RuntimeError:
         asyncio.run(manager.broadcast(message))
 
+
 # =====================================================
-# ✅ Main Billing Cycle
+# ✅ Main Billing Cycle (Now with group_name)
 # =====================================================
 
-def check_billing(db: Session, mode: str = "enforce"):
-    """Run billing cycle for all clients across routers."""
+def check_billing(db: Session, mode: str = "enforce", group_name: str = None):
+    """
+    Execute billing for a specific router group only (if provided).
+    Prevents duplicate billing runs across routers.
+    """
     today = datetime.now(PH_TZ)
     today_date = today.date()
     routers = load_all_mikrotiks()
 
-    clients = db.query(Client).filter(
-        Client.connection_name.ilike(f"%{BILLING_FILTER}%")
-    ).all()
+    query = db.query(Client).filter(Client.connection_name.ilike(f"%{BILLING_FILTER}%"))
+    if group_name:
+        query = query.filter(Client.group_name == group_name)
+
+    clients = query.all()
+    total = cnt_due = cnt_limited = cnt_cutoff = cnt_skipped = 0
+
+    logger.info(f"🔔 Starting billing run (mode={mode}) for group='{group_name}' — {len(clients)} clients.")
 
     for client in clients:
+        total += 1
+
         if not client.billing_date or not client.connection_name:
+            cnt_skipped += 1
+            logger.debug(f"⏭️ Skipping {client.name}: missing billing_date or connection_name.")
             continue
 
         mikrotik = get_router_for_client(client, routers)
         if not mikrotik:
-            logger.warning(f"No router found for {client.name}")
+            cnt_skipped += 1
+            logger.warning(f"No router found for {client.name} — skipping.")
             continue
 
         last_billing_date = get_last_billing_date(client)
         days_overdue = (today_date - last_billing_date).days
+
         if days_overdue < 0:
+            cnt_skipped += 1
+            logger.info(f"💰 [{client.name}] Paid in advance — next billing cycle on {last_billing_date}.")
             continue
 
-        old_status = client.status
-        enforce_billing_rules(
-            client, mikrotik, days_overdue, last_billing_date, db, mode
-        )
+        if client.status == BillingStatus.UNPAID:
+            cnt_due += 1
+        elif client.status == BillingStatus.LIMITED:
+            cnt_limited += 1
+        elif client.status == BillingStatus.CUTOFF:
+            cnt_cutoff += 1
 
-        # Broadcast if changed
+        old_status = client.status
+        enforce_billing_rules(client, mikrotik, days_overdue, last_billing_date, db, mode)
+
         if mode == "enforce" and client.status != old_status:
             safe_broadcast({
                 "event": "billing_update",
@@ -212,6 +240,11 @@ def check_billing(db: Session, mode: str = "enforce"):
             })
 
     db.commit()
+    logger.info(
+        f"🧾 Billing complete (mode={mode}, group={group_name}) — total={total}, due={cnt_due}, "
+        f"limited={cnt_limited}, cutoff={cnt_cutoff}, skipped={cnt_skipped}"
+    )
+
 
 # =====================================================
 # ✅ Apply Billing for One Client
@@ -226,9 +259,7 @@ def apply_billing_to_client(db: Session, client: Client, mode: str = "enforce"):
 
     days_overdue = (today - get_last_billing_date(client)).days
     old_status = client.status
-    enforce_billing_rules(
-        client, mikrotik, days_overdue, get_last_billing_date(client), db, mode
-    )
+    enforce_billing_rules(client, mikrotik, days_overdue, get_last_billing_date(client), db, mode)
 
     if client.status != old_status:
         safe_broadcast({
@@ -239,6 +270,7 @@ def apply_billing_to_client(db: Session, client: Client, mode: str = "enforce"):
             "local_time": datetime.now(PH_TZ).strftime("%Y-%m-%d %H:%M:%S %Z"),
         })
     db.commit()
+
 
 # =====================================================
 # ✅ Billing Actions (Paid / Unpaid)
@@ -257,13 +289,14 @@ def decrement_billing_cycle(client: Client):
 
 
 def handle_paid_client(db: Session, client: Client):
-    """Handle a client marked as PAID."""
     try:
         if client.speed_limit != "Unlimited":
             client.speed_limit = "Unlimited"
+
         increment_billing_cycle(client)
         apply_billing_to_client(db, client, "enforce")
         db.refresh(client)
+
         safe_broadcast({
             "event": "billing_update",
             "client_id": client.id,
@@ -271,14 +304,14 @@ def handle_paid_client(db: Session, client: Client):
             "billing_date": client.billing_date.isoformat() if client.billing_date else None,
             "local_time": datetime.now(PH_TZ).strftime("%Y-%m-%d %H:%M:%S %Z"),
         })
-        logger.info(f"✅ Client {client.name} marked as PAID and billing reapplied.")
+
+        logger.info(f"✅ [{client.name}] marked as PAID — next due {client.billing_date}.")
     except Exception as e:
         db.rollback()
         logger.error(f"Failed to handle paid client {client.name}: {e}")
 
 
 def handle_unpaid_client(db: Session, client: Client, mode: str = "enforce"):
-    """Handle a client being marked UNPAID — reapply billing rules."""
     try:
         apply_billing_to_client(db, client, mode)
         db.refresh(client)
@@ -289,7 +322,7 @@ def handle_unpaid_client(db: Session, client: Client, mode: str = "enforce"):
             "billing_date": client.billing_date.isoformat() if client.billing_date else None,
             "local_time": datetime.now(PH_TZ).strftime("%Y-%m-%d %H:%M:%S %Z"),
         })
-        logger.info(f"⚠️ Client {client.name} marked as UNPAID and billing reapplied.")
+        logger.info(f"⚠️ [{client.name}] marked as UNPAID and billing reapplied.")
     except Exception as e:
         db.rollback()
         logger.error(f"Failed to handle unpaid client {client.name}: {e}")

@@ -1,4 +1,5 @@
 import os
+import json
 import logging
 import threading
 from datetime import datetime
@@ -15,11 +16,78 @@ logger = logging.getLogger("app_lifecycle")
 # ✅ Load .env (important for Docker/local)
 load_dotenv()
 
-# ✅ Global in-memory record for daily notifications
-_last_notification_sent = {}
+# ✅ Define Manila timezone globally
+MANILA_TZ = pytz.timezone("Asia/Manila")
+
+# ✅ Load scheduler times from .env
+NOTIFICATION_TIME = os.getenv("NOTIFICATION_TIME", "10:30")
+ENFORCEMENT_TIME = os.getenv("ENFORCEMENT_TIME", "11:00")
+
+NOTIF_HOUR, NOTIF_MINUTE = map(int, NOTIFICATION_TIME.split(":"))
+ENFORCE_HOUR, ENFORCE_MINUTE = map(int, ENFORCEMENT_TIME.split(":"))
+
+# ✅ Global in-memory record for daily events
+_last_state = {"notification": {}, "enforcement": {}}
 _last_lock = threading.Lock()
+STATE_FILE = "lifecycle_state.json"
 
+# ✅ Shared global scheduler (prevents duplicates)
+SCHEDULER = BackgroundScheduler(timezone=MANILA_TZ)
 
+# ------------------------------------------------------------------
+# 🔹 Safe JSON Loader
+# ------------------------------------------------------------------
+def _safe_load_json(path):
+    """Safely load JSON from a file. Returns {} if file missing, empty, or invalid."""
+    if not os.path.exists(path) or os.path.getsize(path) == 0:
+        return {}
+    try:
+        with open(path, "r") as f:
+            return json.load(f)
+    except json.JSONDecodeError:
+        logger.warning(f"⚠️ Invalid or empty JSON in {path}, resetting lifecycle state.")
+        return {}
+    except Exception as e:
+        logger.warning(f"⚠️ Unexpected error loading {path}: {e}")
+        return {}
+
+# ------------------------------------------------------------------
+# 🔹 Persistent State Helpers
+# ------------------------------------------------------------------
+def _load_state():
+    """Load persisted lifecycle state from disk."""
+    global _last_state
+    try:
+        data = _safe_load_json(STATE_FILE)
+        for section in ["notification", "enforcement"]:
+            if section in data:
+                _last_state[section] = {
+                    k: datetime.strptime(v, "%Y-%m-%d").date()
+                    for k, v in data[section].items()
+                }
+        if any(len(v) > 0 for v in _last_state.values()):
+            logger.info(f"📂 Loaded lifecycle state for {len(_last_state['notification'])} routers.")
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to load lifecycle state: {e}")
+
+def _save_state():
+    """Save in-memory lifecycle state to disk."""
+    try:
+        with open(STATE_FILE, "w") as f:
+            json.dump(
+                {
+                    "notification": {k: v.strftime("%Y-%m-%d") for k, v in _last_state["notification"].items()},
+                    "enforcement": {k: v.strftime("%Y-%m-%d") for k, v in _last_state["enforcement"].items()},
+                },
+                f,
+            )
+        logger.debug("💾 Lifecycle state saved.")
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to save lifecycle state: {e}")
+
+# ------------------------------------------------------------------
+# 🔹 AppLifecycle Class
+# ------------------------------------------------------------------
 class AppLifecycle:
     """Handles a single MikroTik’s background lifecycle (polling + billing)."""
 
@@ -29,8 +97,14 @@ class AppLifecycle:
         self.password = password
         self.poll_interval = poll_interval
         self.group_name = group_name
-        self.scheduler = BackgroundScheduler()
-        self.billing_service = BillingService(host, user, password)
+        self.scheduler = SCHEDULER  # ✅ shared scheduler
+
+        # ✅ FIX: include group_name in BillingService
+        self.billing_service = BillingService(host, user, password, group_name)
+
+        # ✅ runtime guards
+        self._notification_running = False
+        self._enforcement_running = False
 
     # ------------------------------------------------------------------
     # 🔹 Initial Poll
@@ -41,9 +115,7 @@ class AppLifecycle:
             logger.info(f"🔄 [{self.group_name}] Running initial MikroTik poll at startup...")
             mt = MikroTikClient(self.host, self.user, self.password)
             rules = mt.get_netwatch()
-            logger.info(
-                f"✅ [{self.group_name}] Initial poll finished → Found {len(rules) if rules else 0} rules"
-            )
+            logger.info(f"✅ [{self.group_name}] Initial poll finished → Found {len(rules) if rules else 0} rules")
         except Exception as e:
             logger.error(f"❌ [{self.group_name}] Initial MikroTik poll failed: {e}")
 
@@ -66,112 +138,162 @@ class AppLifecycle:
 
         thread = threading.Thread(target=background_polling, daemon=True)
         thread.start()
-        logger.info(
-            f"✅ [{self.group_name}] Continuous MikroTik polling started (every {self.poll_interval}s)"
-        )
+        logger.info(f"✅ [{self.group_name}] Continuous MikroTik polling started (every {self.poll_interval}s)")
 
     # ------------------------------------------------------------------
-    # 🔹 Scheduler for Billing
+    # 🔹 Scheduler for Billing (with group isolation)
     # ------------------------------------------------------------------
     def start_scheduler(self):
-        """Start billing and maintenance schedulers (with smart in-memory catch-up)."""
-        global _last_notification_sent
+        """Start billing and maintenance schedulers (with persistent catch-up)."""
+        _load_state()
+        today = datetime.now(MANILA_TZ).date()
+        now = datetime.now(MANILA_TZ)
 
-        try:
-            tz = pytz.timezone("Asia/Manila")
-            now = datetime.now(tz).date()
+        with _last_lock:
+            notif_last = _last_state["notification"].get(self.group_name)
+            enforce_last = _last_state["enforcement"].get(self.group_name)
 
-            # 🧠 Smart catch-up for missed 8 AM notifications
-            with _last_lock:
-                last_sent = _last_notification_sent.get(self.group_name)
+            notif_time = now.replace(hour=NOTIF_HOUR, minute=NOTIF_MINUTE, second=0, microsecond=0)
+            enforce_time = now.replace(hour=ENFORCE_HOUR, minute=ENFORCE_MINUTE, second=0, microsecond=0)
 
-                if datetime.now(tz).hour >= 8 and last_sent != now:
-                    logger.info(f"⏰ [{self.group_name}] Missed 8 AM — sending catch-up notification once.")
-                    try:
-                        self.billing_service.run("notification")
-                        _last_notification_sent[self.group_name] = now
-                        logger.info(f"📩 [{self.group_name}] Catch-up notification sent successfully.")
-                    except Exception as e:
-                        logger.error(f"⚠️ [{self.group_name}] Failed catch-up notification: {e}")
+            # 🕒 Notification catch-up (safe)
+            if not notif_last or notif_last < today:
+                elapsed = (now - notif_time).total_seconds()
+                if now > notif_time and 3600 < elapsed < 7200:  # within 1h–2h window
+                    logger.info(f"⏰ [{self.group_name}] Missed notification — triggering catch-up.")
+                    self._run_notification(today)
+                else:
+                    logger.info(f"🕐 [{self.group_name}] Skipping notification catch-up (too close/too late).")
 
-            # 🔄 Regular sync every 10s
+            # ⚙️ Enforcement catch-up (safe)
+            if not enforce_last or enforce_last < today:
+                elapsed = (now - enforce_time).total_seconds()
+                if now > enforce_time and 3600 < elapsed < 7200:
+                    logger.info(f"⏰ [{self.group_name}] Missed enforcement — triggering catch-up.")
+                    self._run_enforcement(today)
+                else:
+                    logger.info(f"🕐 [{self.group_name}] Skipping enforcement catch-up (too close/too late).")
+
+        # 🔄 Regular sync every 10s (per group)
+        job_id_sync = f"sync_{self.group_name}"
+        if not self.scheduler.get_job(job_id_sync):
             self.scheduler.add_job(
-                self.billing_service.run,
+                lambda: self.billing_service.run("sync"),
                 "interval",
                 seconds=10,
-                args=["sync"],
-                id=f"billing_sync_{self.group_name}",
+                id=job_id_sync,
             )
 
-            # 🕗 Daily 8 AM notification (with duplicate check)
-            def daily_notification_wrapper():
-                with _last_lock:
-                    today = datetime.now(tz).date()
-                    if _last_notification_sent.get(self.group_name) != today:
-                        self.billing_service.run("notification")
-                        _last_notification_sent[self.group_name] = today
-                        logger.info(f"📩 [{self.group_name}] Daily 8 AM notification executed.")
-                    else:
-                        logger.info(
-                            f"⏸️ [{self.group_name}] Skipped duplicate 8 AM notification (already sent today)."
-                        )
-
+        # 🕗 Daily notification (per group)
+        job_id_notif = f"notification_{self.group_name}"
+        if not self.scheduler.get_job(job_id_notif):
             self.scheduler.add_job(
-                daily_notification_wrapper,
+                lambda: self._run_notification(datetime.now(MANILA_TZ).date()),
                 "cron",
-                hour=8,
-                minute=0,
-                id=f"billing_notification_{self.group_name}",
+                hour=NOTIF_HOUR,
+                minute=NOTIF_MINUTE,
+                id=job_id_notif,
                 misfire_grace_time=3600,
+                timezone=MANILA_TZ,
             )
 
-            # 🕘 Daily 9 AM enforcement
+        # 🕘 Daily enforcement (per group)
+        job_id_enforce = f"enforce_{self.group_name}"
+        if not self.scheduler.get_job(job_id_enforce):
             self.scheduler.add_job(
-                self.billing_service.run,
+                lambda: self._run_enforcement(datetime.now(MANILA_TZ).date()),
                 "cron",
-                hour=9,
-                minute=0,
-                args=["enforce"],
-                id=f"billing_enforce_{self.group_name}",
+                hour=ENFORCE_HOUR,
+                minute=ENFORCE_MINUTE,
+                id=job_id_enforce,
                 misfire_grace_time=3600,
+                timezone=MANILA_TZ,
             )
 
+        if not self.scheduler.running:
             self.scheduler.start()
-            logger.info(f"✅ [{self.group_name}] Scheduler started (smart catch-up + 9 AM enforce)")
+            logger.info("✅ Global scheduler started (shared for all groups)")
+        else:
+            logger.info(f"🔁 Scheduler already running — attached jobs for {self.group_name}")
 
-        except Exception as e:
-            logger.error(f"❌ [{self.group_name}] Scheduler failed to start: {e}")
+    # ------------------------------------------------------------------
+    # 🔹 Execution Wrappers (group isolated)
+    # ------------------------------------------------------------------
+    def _run_notification(self, today):
+        with _last_lock:
+            last_sent = _last_state["notification"].get(self.group_name)
+            if last_sent == today:
+                logger.info(f"🕐 [{self.group_name}] Notification already sent today — skip.")
+                return
+            if self._notification_running:
+                logger.info(f"🛑 [{self.group_name}] Notification already running — skip duplicate.")
+                return
+
+            self._notification_running = True
+            try:
+                self.billing_service.run("notification")
+                _last_state["notification"][self.group_name] = today
+                _save_state()
+                logger.info(f"📩 [{self.group_name}] Notification executed successfully.")
+            except Exception as e:
+                logger.error(f"❌ [{self.group_name}] Notification failed: {e}")
+            finally:
+                self._notification_running = False
+
+    def _run_enforcement(self, today):
+        with _last_lock:
+            last_sent = _last_state["enforcement"].get(self.group_name)
+            if last_sent == today:
+                logger.info(f"🕐 [{self.group_name}] Enforcement already done today — skip.")
+                return
+            if self._enforcement_running:
+                logger.info(f"🛑 [{self.group_name}] Enforcement already running — skip duplicate.")
+                return
+
+            self._enforcement_running = True
+            try:
+                self.billing_service.run("enforce")
+                _last_state["enforcement"][self.group_name] = today
+                _save_state()
+                logger.info(f"⚙️ [{self.group_name}] Enforcement executed successfully.")
+            except Exception as e:
+                logger.error(f"❌ [{self.group_name}] Enforcement failed: {e}")
+            finally:
+                self._enforcement_running = False
 
     # ------------------------------------------------------------------
     # 🔹 Lifecycle Start & Stop
     # ------------------------------------------------------------------
     def startup(self):
-        """Start all background services."""
         logger.info(f"🚀 Starting lifecycle for {self.group_name}")
         self.initial_poll()
         self.start_polling()
         self.start_scheduler()
 
     def shutdown(self):
-        """Cleanly shut down scheduler."""
         try:
             logger.info(f"🛑 [{self.group_name}] Shutting down scheduler...")
-            self.scheduler.shutdown()
+            if self.scheduler.running:
+                self.scheduler.shutdown()
         except Exception as e:
             logger.error(f"❌ [{self.group_name}] Error during shutdown: {e}")
-
 
 # ------------------------------------------------------------------
 # 🔸 Load All MikroTik Routers from ROUTER_MAP
 # ------------------------------------------------------------------
 def load_all_mikrotiks():
-    """Load all MikroTik routers from ROUTER_MAP_JSON."""
     mikrotiks = []
     username = os.getenv("MIKROTIK_USER", "admin")
     password = os.getenv("MIKROTIK_PASS", "")
     poll_interval = int(os.getenv("MIKROTIK_POLL_INTERVAL", 30))
+    seen_groups = set()
 
     for group_name, host in ROUTER_MAP.items():
+        if group_name in seen_groups:
+            logger.warning(f"⚠️ Skipping duplicate lifecycle for '{group_name}'")
+            continue
+        seen_groups.add(group_name)
+
         mikrotiks.append({
             "host": host,
             "user": username,
@@ -182,7 +304,6 @@ def load_all_mikrotiks():
 
     logger.info(f"✅ Loaded {len(mikrotiks)} routers from ROUTER_MAP")
     return mikrotiks
-
 
 # ------------------------------------------------------------------
 # 🔸 Start All Lifecycles (Called by main.py)

@@ -145,18 +145,19 @@ const ClientsPage = () => {
         const status = c.status?.toLowerCase() || "";
 
         return terms.some((term) => {
-          // ✅ group_name must match exactly
-          if (group_name === term) return true;
+          // ✅ Exact match for group_name only
+          const isExactGroupMatch = group_name === term;
 
-          // ✅ all other fields can match partially
-          return (
+          // ✅ Partial match for all others
+          const isLikeMatch =
             id.includes(term) ||
             name.includes(term) ||
             messenger_id.includes(term) ||
             connection_name.includes(term) ||
             state.includes(term) ||
-            status.includes(term)
-          );
+            status.includes(term);
+
+          return isExactGroupMatch || isLikeMatch;
         });
       });
     }

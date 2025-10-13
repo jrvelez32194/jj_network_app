@@ -58,14 +58,12 @@ app.include_router(messages.router, prefix="/messages", tags=["messages"])
 app.include_router(mikrotik.router, prefix="/api")
 app.include_router(message_logs.router, prefix="/message_logs", tags=["message_logs"])
 
-
 # ---------------------------
 # 🧠 Health Check
 # ---------------------------
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
-
 
 # ---------------------------
 # ✅ WebSocket
@@ -79,17 +77,12 @@ async def websocket_endpoint(websocket: WebSocket):
     except Exception:
         await manager.disconnect(websocket)
 
-
 # ---------------------------
 # ⚡ Manual Billing Trigger (Admin / Testing Only)
 # ---------------------------
 @app.post("/billing/run/{mode}")
 def run_billing_now(mode: str):
-    """
-    Manually trigger billing for all MikroTik routers defined in .env.
-    This is optional and mainly for debugging or admin use.
-    """
-    routers = load_all_mikrotiks()  # ✅ unified loader from app_lifecycle
+    routers = load_all_mikrotiks()
     if not routers:
         return {"message": "⚠️ No MikroTik routers configured."}
 
@@ -97,7 +90,7 @@ def run_billing_now(mode: str):
     for cfg in routers:
         billing_service = BillingService(cfg["host"], cfg["user"], cfg["password"])
         try:
-            billing_service.run()
+            billing_service.run(mode)
             results.append({"host": cfg["host"], "status": "ok"})
         except Exception as e:
             results.append({"host": cfg["host"], "status": f"error: {e}"})
@@ -107,21 +100,30 @@ def run_billing_now(mode: str):
         "results": results,
     }
 
-
 # ---------------------------
 # 🚀 Lifecycle Management
 # ---------------------------
 lifecycles = []
 
+# 🔒 NEW: guard to avoid duplicate schedulers
+ENABLE_SCHEDULER = os.getenv("ENABLE_SCHEDULER", "true").lower() == "true"
+INSTANCE_ROLE = os.getenv("INSTANCE_ROLE", "main").lower()  # e.g., "main" or "replica"
 
 @app.on_event("startup")
 def startup_event():
     """Start background polling + billing for all MikroTik routers."""
     global lifecycles
-    logger.info("🚀 FastAPI startup — initializing all MikroTik lifecycles...")
-    lifecycles = start_all_lifecycles()
-    logger.info(f"✅ {len(lifecycles)} MikroTik lifecycle(s) started.")
 
+    logger.info(f"🚀 FastAPI startup (PID {os.getpid()}) — instance role: {INSTANCE_ROLE}")
+
+    # 🔒 Guard to ensure only one instance runs schedulers
+    if not ENABLE_SCHEDULER or INSTANCE_ROLE != "main":
+        logger.info("⏸️ Scheduler disabled for this instance.")
+        return
+
+    logger.info("🧠 Initializing all MikroTik lifecycles...")
+    lifecycles = start_all_lifecycles()
+    logger.info(f"✅ {len(lifecycles)} MikroTik lifecycle(s) started in PID {os.getpid()}.")
 
 @app.on_event("shutdown")
 def shutdown_event():
