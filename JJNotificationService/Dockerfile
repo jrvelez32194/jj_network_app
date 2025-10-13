@@ -1,11 +1,15 @@
-# jjnotificationservice/Dockerfile
+# ====================================================
+# 🐍 Base Image
+# ====================================================
 FROM python:3.10-slim
 
+# ----------------------------------------------------
 # Set working directory
+# ----------------------------------------------------
 WORKDIR /app
 
 # ----------------------------------------------------
-# ✅ Install dependencies (including tzdata for Manila time)
+# 🧩 Install system dependencies
 # ----------------------------------------------------
 RUN apt-get update && apt-get install -y \
     build-essential \
@@ -18,32 +22,38 @@ RUN apt-get update && apt-get install -y \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-# ✅ Set environment timezone variable
+# ----------------------------------------------------
+# 🕐 Timezone
+# ----------------------------------------------------
 ENV TZ=Asia/Manila
 
 # ----------------------------------------------------
-# Copy Python dependencies and install
+# ⚙️ Python dependencies
 # ----------------------------------------------------
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+
+# ✅ Upgrade pip safely and with retries/timeouts
+RUN pip install --default-timeout=120 --retries=10 --no-cache-dir --upgrade pip==24.2 setuptools wheel && \
+    PIP_DEFAULT_TIMEOUT=120 \
+    pip install --no-cache-dir -r requirements.txt --timeout 120 --retries 10 --index-url https://pypi.org/simple --progress-bar off
 
 # ----------------------------------------------------
-# Copy application source
+# 📦 Copy app source
 # ----------------------------------------------------
 COPY . .
 
 # ----------------------------------------------------
-# Copy entrypoint script and set permissions
+# 🧰 Entrypoint
 # ----------------------------------------------------
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 # ----------------------------------------------------
-# Expose backend port
+# 🌐 Expose backend port
 # ----------------------------------------------------
 EXPOSE 8000
 
 # ----------------------------------------------------
-# Default entrypoint
+# 🚀 Default entrypoint
 # ----------------------------------------------------
 ENTRYPOINT ["/entrypoint.sh"]

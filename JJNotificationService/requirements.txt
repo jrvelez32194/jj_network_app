@@ -20,6 +20,7 @@ pydantic==1.10.12
 # 🌐 HTTP Requests
 # ============================
 requests==2.31.0
+charset-normalizer==3.3.2   # ✅ Fix missing dependency for requests
 
 # ============================
 # ⚙️ Config & Environment
@@ -47,3 +48,8 @@ pytz==2025.1
 # 🔌 WebSockets
 # ============================
 websockets==11.0.3
+
+# ============================
+# 🖥️ System Monitoring
+# ============================
+psutil==6.0.0

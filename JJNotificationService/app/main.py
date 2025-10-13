@@ -8,6 +8,7 @@ from app.routes import mikrotik, clients, templates, messages, message_logs
 from app.websocket_manager import manager
 from app.services.app_lifecycle import start_all_lifecycles, load_all_mikrotiks
 from app.services.billing_service import BillingService
+from app.routes import system_monitor
 
 # ---------------------------
 # 📝 Logging Config
@@ -57,6 +58,7 @@ app.include_router(templates.router, prefix="/templates", tags=["templates"])
 app.include_router(messages.router, prefix="/messages", tags=["messages"])
 app.include_router(mikrotik.router, prefix="/api")
 app.include_router(message_logs.router, prefix="/message_logs", tags=["message_logs"])
+app.include_router(system_monitor.router, tags=["system-monitor"])
 
 # ---------------------------
 # 🧠 Health Check
