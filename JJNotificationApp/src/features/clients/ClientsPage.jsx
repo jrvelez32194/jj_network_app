@@ -125,15 +125,21 @@ const ClientsPage = () => {
 
   // ✅ Search
   const [searchTerm, setSearchTerm] = useState("");
+
   const filteredClients = useMemo(() => {
     let result = clients;
 
-    // 🔍 Search filter
     if (searchTerm) {
       const terms = searchTerm
         .split(",")
         .map((t) => t.trim().toLowerCase())
         .filter((t) => t.length > 0);
+
+      // 🔍 Determine which terms match existing group names
+      const groupTerms = terms.filter((term) =>
+        clients.some((c) => c.group_name?.toLowerCase() === term)
+      );
+      const otherTerms = terms.filter((term) => !groupTerms.includes(term));
 
       result = result.filter((c) => {
         const id = c.id?.toString().toLowerCase() || "";
@@ -144,24 +150,39 @@ const ClientsPage = () => {
         const state = c.state?.toLowerCase() || "";
         const status = c.status?.toLowerCase() || "";
 
-        return terms.some((term) => {
-          // ✅ Exact match for group_name only
-          const isExactGroupMatch = group_name === term;
+        // ✅ CASE 1: If there are group terms, restrict to those groups
+        if (groupTerms.length > 0) {
+          if (!groupTerms.includes(group_name)) return false; // skip non-matching groups
 
-          // ✅ Partial match for all others
-          const isLikeMatch =
+          // Within those groups, match any other term (partial)
+          if (otherTerms.length === 0) return true; // only group filter given
+
+          return otherTerms.some(
+            (term) =>
+              id.includes(term) ||
+              name.includes(term) ||
+              messenger_id.includes(term) ||
+              connection_name.includes(term) ||
+              state.includes(term) ||
+              status.includes(term)
+          );
+        }
+
+        // ✅ CASE 2: No group filter → search across all fields freely
+        return terms.some(
+          (term) =>
             id.includes(term) ||
             name.includes(term) ||
             messenger_id.includes(term) ||
             connection_name.includes(term) ||
+            group_name.includes(term) ||
             state.includes(term) ||
-            status.includes(term);
-
-          return isExactGroupMatch || isLikeMatch;
-        });
+            status.includes(term)
+        );
       });
     }
 
+    // ✅ Keep your state/status filter logic
     const activeFilters = Object.entries(statusFilters)
       .filter(([_, v]) => v)
       .map(([k]) => k);
@@ -170,9 +191,6 @@ const ClientsPage = () => {
       result = result.filter((c) => {
         const matchState = activeFilters.includes(c.state);
         const matchStatus = activeFilters.includes(c.status);
-
-        // 🕵️‍♂️ Handle UNKNOWN filter properly:
-        // Include clients with missing billing_date or undefined state
         const isUnknown =
           activeFilters.includes("UNKNOWN") &&
           (!["UP", "DOWN"].includes(c.state) || !c.billing_date);
