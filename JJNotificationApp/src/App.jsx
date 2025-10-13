@@ -3,6 +3,7 @@ import MainLayout from "./layouts/MainLayout";
 import ClientsPage from "./features/clients/ClientsPage";
 import TemplatesPage from "./features/templates/TemplatesPage";
 import MessageLogs from "./features/messages/MessageLogs";
+import SystemMonitor from "./components/SystemMonitor";
 import NotFound from "./components/NotFound";
 import "./index.css";
 
@@ -11,16 +12,23 @@ function App() {
     <Router>
       <Routes>
         <Route element={<MainLayout />}>
+          {/* 🏠 Home Page — with System Monitor */}
           <Route
             path="/"
             element={
-              <div className="text-center">
+              <div className="flex flex-col items-center text-center gap-6 mt-8">
                 <h1 className="text-3xl font-bold">
                   Welcome to JJ Notification App 🔔
                 </h1>
+                {/* ✅ System Monitor displayed only on Home */}
+                <div className="w-full flex justify-center px-4">
+                  <SystemMonitor />
+                </div>
               </div>
             }
           />
+
+          {/* Other pages */}
           <Route path="/clients" element={<ClientsPage />} />
           <Route path="/templates" element={<TemplatesPage />} />
           <Route path="/message-logs" element={<MessageLogs />} />
