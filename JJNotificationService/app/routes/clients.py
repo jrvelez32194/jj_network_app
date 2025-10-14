@@ -159,14 +159,25 @@ async def set_paid(client_id: int, db: Session = Depends(get_db)):
     if not client:
         raise HTTPException(status_code=404, detail="Client not found")
 
+    # 🧩 Save the old status before updating
+    prev_status = client.status
+    # Update to PAID
     client.status = BillingStatus.PAID
     handle_paid_client(db, client)
 
+    # 🧩 Send message if connected to Messenger
     if client.messenger_id:
-        msg = (
-            f"Hi {client.name}, we received your payment of {client.amt_monthly}.\n"
-            "Your connection will be fully restored shortly. ✅"
-        )
+        if prev_status in [BillingStatus.LIMITED, BillingStatus.CUTOFF]:
+            msg = (
+                f"Hi {client.name}, we received your payment of {client.amt_monthly}.\n"
+                "Your connection will be fully restored shortly. ✅ Thank you!"
+            )
+        else:
+            msg = (
+                f"Hi {client.name}, we received your payment of {client.amt_monthly}.\n"
+                "Thank you!"
+            )
+
         send_message(client.messenger_id, msg)
 
     await manager.broadcast({
@@ -186,13 +197,22 @@ async def set_paid_bulk(client_ids: List[int], db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="No clients found")
 
     for client in clients:
+        prev_status = client.status
         client.status = BillingStatus.PAID
         handle_paid_client(db, client)
+
         if client.messenger_id:
-            msg = (
-                f"Hi {client.name}, we received your payment of {client.amt_monthly}.\n"
-                "Your connection will be fully restored shortly. ✅"
-            )
+            if prev_status in [BillingStatus.LIMITED, BillingStatus.CUTOFF]:
+                msg = (
+                    f"Hi {client.name}, we received your payment of {client.amt_monthly}.\n"
+                    "Your connection will be fully restored shortly. ✅ Thank you!"
+                )
+            else:
+                msg = (
+                    f"Hi {client.name}, we received your payment of {client.amt_monthly}.\n"
+                    "Thank you!"
+                )
+
             send_message(client.messenger_id, msg)
 
     await manager.broadcast({
@@ -202,6 +222,7 @@ async def set_paid_bulk(client_ids: List[int], db: Session = Depends(get_db)):
     })
 
     return {"message": f"{len(clients)} clients marked as PAID"}
+
 
 
 # 🚀 Single Set Unpaid

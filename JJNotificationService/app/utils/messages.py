@@ -63,7 +63,7 @@ Note: Please send me a screenshot of your gcash transaction for us to verify.
 🏡 Cash Payment
 You may also pay in person at {payment_location}.
 
-Thank you from @JJNet.
+Thank you from JJ Internet Service.
 """
 
 # =====================================================

@@ -7,6 +7,7 @@ import json
 from sqlalchemy.orm import Session
 from app.database import SessionLocal
 from app import models
+from app.models import BillingStatus
 from app.utils.messenger import send_message
 from app.utils.mikrotik_config import MikroTikClient
 
@@ -89,6 +90,11 @@ def notify_clients(db: Session, template_name: str, connection_name: str = None,
 
     clients = query.all()
     for client in clients:
+        if getattr(client, "status", None) == BillingStatus.CUTOFF:
+          logger.info(
+            f"⏩ Skipping {client.name} ({connection_name}) – status is CUTOFF")
+          continue  # Skip clients who are cut off
+
         resp = send_message(client.messenger_id, template.content)
         log = models.MessageLog(
             client_id=client.id,
