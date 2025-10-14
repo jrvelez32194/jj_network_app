@@ -3,7 +3,7 @@ import MainLayout from "./layouts/MainLayout";
 import ClientsPage from "./features/clients/ClientsPage";
 import TemplatesPage from "./features/templates/TemplatesPage";
 import MessageLogs from "./features/messages/MessageLogs";
-import SystemMonitor from "./components/SystemMonitor";
+import SystemMonitor from "./features/systemMonitor/SystemMonitor";
 import NotFound from "./components/NotFound";
 import "./index.css";
 

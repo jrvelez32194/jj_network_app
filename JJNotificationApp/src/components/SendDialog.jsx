@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { useGetTemplatesDropdownQuery } from "../features/templates/templatesApi";
+import { useGetTemplatesDropdownQuery } from "../features/api/templatesApi";
 
 export default function SendDialog({
   isOpen,

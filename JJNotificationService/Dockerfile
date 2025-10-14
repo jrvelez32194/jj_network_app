@@ -54,6 +54,12 @@ RUN chmod +x /entrypoint.sh
 EXPOSE 8000
 
 # ----------------------------------------------------
+# 🚀 Environment Configs for Dev Autoreload
+# ----------------------------------------------------
+# Exclude .venv and migrations folders from uvicorn autoreload scan
+ENV UVICORN_RELOAD_EXCLUDES=".venv,migrations,__pycache__"
+
+# ----------------------------------------------------
 # 🚀 Default entrypoint
 # ----------------------------------------------------
 ENTRYPOINT ["/entrypoint.sh"]

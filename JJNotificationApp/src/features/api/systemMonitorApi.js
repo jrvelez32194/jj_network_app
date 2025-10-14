@@ -1,4 +1,4 @@
-import { apiSlice } from "../features/api/apiSlice";
+import { apiSlice } from "./apiSlice";
 
 export const systemMonitorApi = apiSlice.injectEndpoints({
   endpoints: (builder) => ({

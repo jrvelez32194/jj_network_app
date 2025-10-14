@@ -4,10 +4,10 @@ import {
   useDeleteMessageLogMutation,
   useDeleteMessageLogsMutation,
   useDeleteAllMessageLogsMutation,
-} from "../messages/messageLogsApi";
+} from "../api/messageLogsApi";
 import ConfirmDialog from "../../components/ConfirmDialog";
 import { InfoDialog } from "../../components/InfoDialog";
-import Pagination from "../../components/common/Pagination";
+import Pagination from "../../components/Pagination";
 
 export default function MessageLogs() {
   const { showToast, Toast } = InfoDialog();

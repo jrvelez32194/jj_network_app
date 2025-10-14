@@ -1,4 +1,4 @@
-import { useGetSystemStatusQuery } from "./systemMonitorApi";
+import { useGetSystemStatusQuery } from "../api/systemMonitorApi";
 
 export default function SystemMonitor() {
   const {

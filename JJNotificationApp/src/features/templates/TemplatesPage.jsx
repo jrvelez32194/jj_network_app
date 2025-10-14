@@ -5,11 +5,11 @@ import {
   useUpdateTemplateMutation,
   useDeleteTemplateMutation,
   useDeleteTemplatesMutation,
-} from "../templates/templatesApi";
+} from "../api/templatesApi.js";
 import AddTemplateDrawer from "./AddTemplateDrawer";
 import ConfirmDialog from "../../components/ConfirmDialog";
 import { InfoDialog } from "../../components/InfoDialog";
-import Pagination from "../../components/common/Pagination";
+import Pagination from "../../components/Pagination.jsx";
 
 const TemplatesPage = () => {
   // ✅ State

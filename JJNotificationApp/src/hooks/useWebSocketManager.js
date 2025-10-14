@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { clientsApi } from "../features/clients/clientsApi";
+import { clientsApi } from "../features/api/clientsApi";
 
 export function useWebSocketManager({ showToast, dispatch }) {
   const reconnectDelayRef = useRef(1000);
