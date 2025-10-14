@@ -2,20 +2,18 @@ version: "3.9"
 
 services:
   jj_db:
-    image: postgres:15   # ✅ official amd64 image works on PC
+    image: postgres:15
     restart: always
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
-      TZ: Asia/Manila                # ✅ Set Manila timezone
-      POSTGRES_INITDB_ARGS: "--auth-local=trust --auth-host=trust"
-      POSTGRES_LOG_TIMEZONE: Asia/Manila
+      TZ: Asia/Manila
     ports:
       - "5432:5432"
     volumes:
       - jj_db_data:/var/lib/postgresql/data
-      - /etc/localtime:/etc/localtime:ro   # ✅ Sync host clock
+      - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB} || exit 1"]
@@ -40,12 +38,12 @@ services:
       DB_PASSWORD: ${POSTGRES_PASSWORD}
       DB_NAME: ${POSTGRES_DB}
       ENV: docker
-      TZ: Asia/Manila                 # ✅ Set Manila timezone
+      TZ: Asia/Manila
     ports:
       - "8000:8000"
+    # ⚠️ Removed source volume mount to reduce memory usage
     volumes:
-      - ./JJNotificationService:/app
-      - /etc/localtime:/etc/localtime:ro   # ✅ Sync host clock
+      - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro
     entrypoint: ["/entrypoint.sh"]
     healthcheck:
@@ -55,19 +53,19 @@ services:
       retries: 5
 
   jj_pgadmin:
-    image: dpage/pgadmin4   # ✅ official pgAdmin for amd64
+    image: dpage/pgadmin4
     restart: always
     environment:
       PGADMIN_DEFAULT_EMAIL: admin@admin.com
       PGADMIN_DEFAULT_PASSWORD: admin
-      TZ: Asia/Manila                 # ✅ Set Manila timezone
-    volumes:
-      - /etc/localtime:/etc/localtime:ro   # ✅ Sync host clock
-      - /etc/timezone:/etc/timezone:ro
+      TZ: Asia/Manila
     ports:
       - "5050:80"
     depends_on:
       - jj_db
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
 
   jjnotificationapp:
     build:

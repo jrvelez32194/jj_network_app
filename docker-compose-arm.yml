@@ -8,14 +8,14 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
-      TZ: Asia/Manila                # ✅ Set Manila timezone
+      TZ: Asia/Manila
       POSTGRES_INITDB_ARGS: "--auth-local=trust --auth-host=trust"
       POSTGRES_LOG_TIMEZONE: Asia/Manila
     ports:
       - "5432:5432"
     volumes:
       - jj_db_data:/var/lib/postgresql/data
-      - /etc/localtime:/etc/localtime:ro   # ✅ Sync host clock
+      - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB} || exit 1"]
@@ -24,7 +24,7 @@ services:
       retries: 10
 
   jjnotificationservice:
-    image: jjnotificationservice:arm   # ✅ use prebuilt image
+    image: jjnotificationservice:arm
     container_name: jjnotificationservice
     restart: always
     depends_on:
@@ -38,17 +38,18 @@ services:
       DB_PASSWORD: ${POSTGRES_PASSWORD}
       DB_NAME: ${POSTGRES_DB}
       ENV: docker
-      TZ: Asia/Manila                 # ✅ Set Manila timezone
+      TZ: Asia/Manila
     ports:
       - "8000:8000"
     volumes:
-      - /etc/localtime:/etc/localtime:ro   # ✅ Sync host clock
+      - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
+    # ⚠️ Removed deploy/memory limit; add swap on host instead for low-memory devices
 
   jj_pgadmin:
     image: biarms/pgadmin4
@@ -56,9 +57,9 @@ services:
     environment:
       PGADMIN_DEFAULT_EMAIL: admin@admin.com
       PGADMIN_DEFAULT_PASSWORD: admin
-      TZ: Asia/Manila                 # ✅ Set Manila timezone
+      TZ: Asia/Manila
     volumes:
-      - /etc/localtime:/etc/localtime:ro   # ✅ Sync host clock
+      - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro
     ports:
       - "5050:80"
@@ -66,7 +67,7 @@ services:
       - jj_db
 
   jjnotificationapp:
-    image: jjnotificationapp:arm   # ✅ use prebuilt image
+    image: jjnotificationapp:arm
     container_name: jjnotificationapp
     restart: always
     depends_on:

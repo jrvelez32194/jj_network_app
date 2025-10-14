@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import { useDispatch } from "react-redux";
 import Pagination from "../../components/Pagination";
 import {
@@ -101,10 +101,6 @@ const ClientsPage = () => {
   // ----------------------------------------------------------
   // 🔍 Filtering & Search
   // ----------------------------------------------------------
-  useEffect(() => {
-    setCurrentPage(1);
-  }, [searchTerm]);
-
   const toggleFilter = (key) => {
     setStatusFilters((prev) => ({
       ...prev,
@@ -114,7 +110,7 @@ const ClientsPage = () => {
 
   const handleSearch = (value) => {
     setSearchTerm(value);
-    setCurrentPage(1);
+    // Removed setCurrentPage(1) here
   };
 
   const filteredClients = useMemo(() => {
@@ -126,7 +122,6 @@ const ClientsPage = () => {
         .map((t) => t.trim().toLowerCase())
         .filter((t) => t.length > 0);
 
-      // 🔍 Determine which terms match existing group names
       const groupTerms = terms.filter((term) =>
         clients.some((c) => c.group_name?.toLowerCase() === term)
       );
@@ -141,13 +136,9 @@ const ClientsPage = () => {
         const state = c.state?.toLowerCase() || "";
         const status = c.status?.toLowerCase() || "";
 
-        // ✅ CASE 1: If there are group terms, restrict to those groups
         if (groupTerms.length > 0) {
-          if (!groupTerms.includes(group_name)) return false; // skip non-matching groups
-
-          // Within those groups, match any other term (partial)
-          if (otherTerms.length === 0) return true; // only group filter given
-
+          if (!groupTerms.includes(group_name)) return false;
+          if (otherTerms.length === 0) return true;
           return otherTerms.some(
             (term) =>
               id.includes(term) ||
@@ -159,7 +150,6 @@ const ClientsPage = () => {
           );
         }
 
-        // ✅ CASE 2: No group filter → search across all fields freely
         return terms.some(
           (term) =>
             id.includes(term) ||
@@ -173,7 +163,6 @@ const ClientsPage = () => {
       });
     }
 
-    // ✅ Keep your state/status filter logic
     const activeFilters = Object.entries(statusFilters)
       .filter(([_, v]) => v)
       .map(([k]) => k);
@@ -194,25 +183,33 @@ const ClientsPage = () => {
   }, [clients, searchTerm, statusFilters]);
 
   // ----------------------------------------------------------
-  // 📄 Pagination
+  // 📄 Pagination Fix
   // ----------------------------------------------------------
   const totalPages = Math.ceil(filteredClients.length / pageSize);
-  const currentPageSafe = Math.min(currentPage, totalPages || 1);
+
+  // Keep track of previous search/filter values
+  const prevSearchRef = useRef("");
+  const prevFiltersRef = useRef(statusFilters);
+
+  useEffect(() => {
+    const filtersChanged =
+      JSON.stringify(prevFiltersRef.current) !== JSON.stringify(statusFilters);
+
+    if (searchTerm !== prevSearchRef.current || filtersChanged) {
+      setCurrentPage(1);
+      prevSearchRef.current = searchTerm;
+      prevFiltersRef.current = statusFilters;
+    }
+  }, [searchTerm, statusFilters]);
+
+  // Reset page if currentPage exceeds totalPages
+  useEffect(() => {
+    if (currentPage > totalPages) setCurrentPage(totalPages || 1);
+  }, [totalPages, currentPage]);
+
   const paginatedClients = filteredClients
-    .map((c) => ({
-      ...c,
-      status: !c.billing_date ? "UNKNOWN" : c.status,
-    }))
-    .slice((currentPageSafe - 1) * pageSize, currentPageSafe * pageSize);
-
-  useEffect(() => {
-    const savedPage = Number(localStorage.getItem("clientsPage")) || 1;
-    setCurrentPage(savedPage);
-  }, []);
-
-  useEffect(() => {
-    localStorage.setItem("clientsPage", currentPage);
-  }, [currentPage]);
+    .map((c) => ({ ...c, status: !c.billing_date ? "UNKNOWN" : c.status }))
+    .slice((currentPage - 1) * pageSize, currentPage * pageSize);
 
   // ----------------------------------------------------------
   // ✅ Selection Handlers
