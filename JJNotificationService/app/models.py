@@ -15,7 +15,8 @@ Base = declarative_base()
 class ConnectionState(str, enum.Enum):
     UP = "UP"
     DOWN = "DOWN"
-    UNKNOWN = "UNKNOWN"  # default state
+    UNKNOWN = "UNKNOWN"
+    SPIKING = "SPIKING"
 
 
 # ------------------------------

@@ -47,22 +47,17 @@ def load_all_mikrotiks():
 
 
 def get_router_for_client(client: Client, routers: list[dict]):
-    """Select router based on client's group_name or connection_name."""
+    """Strictly select router based on client's group_name."""
     if not routers:
         return None
 
     group_name = (client.group_name or "").upper().strip()
-
     for r in routers:
-        if r["group"].upper() == group_name:
+        if r["group"] == group_name:
             return r["client"]
 
-    if client.connection_name:
-        for r in routers:
-            if r["client"].host in client.connection_name:
-                return r["client"]
-
-    return routers[0]["client"]
+    logger.warning(f"[{client.name}] No router matched group '{group_name}' — skipping.")
+    return None
 
 
 # =====================================================
@@ -160,8 +155,7 @@ def enforce_billing_rules(
     except Exception as e:
         logger.error(f"Billing rule failed for {client.name}: {e}")
     finally:
-        db.add(client)
-        db.commit()
+        db.add(client)  # removed per-client commit
 
 
 # =====================================================
@@ -177,7 +171,7 @@ def safe_broadcast(message: dict):
 
 
 # =====================================================
-# ✅ Main Billing Cycle (Now with group_name)
+# ✅ Main Billing Cycle (Group Aware)
 # =====================================================
 
 def check_billing(db: Session, mode: str = "enforce", group_name: str = None):
@@ -199,6 +193,7 @@ def check_billing(db: Session, mode: str = "enforce", group_name: str = None):
     logger.info(f"🔔 Starting billing run (mode={mode}) for group='{group_name}' — {len(clients)} clients.")
 
     for client in clients:
+        db.refresh(client)  # ensure latest state from DB
         total += 1
 
         if not client.billing_date or not client.connection_name:
@@ -209,7 +204,6 @@ def check_billing(db: Session, mode: str = "enforce", group_name: str = None):
         mikrotik = get_router_for_client(client, routers)
         if not mikrotik:
             cnt_skipped += 1
-            logger.warning(f"No router found for {client.name} — skipping.")
             continue
 
         last_billing_date = get_last_billing_date(client)
@@ -231,6 +225,7 @@ def check_billing(db: Session, mode: str = "enforce", group_name: str = None):
         enforce_billing_rules(client, mikrotik, days_overdue, last_billing_date, db, mode)
 
         if mode == "enforce" and client.status != old_status:
+            logger.info(f"[{client.name}] ({client.group_name}) via {mikrotik.host} → {old_status.value} → {client.status.value}")
             safe_broadcast({
                 "event": "billing_update",
                 "client_id": client.id,
