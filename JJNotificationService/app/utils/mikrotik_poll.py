@@ -45,35 +45,45 @@ def get_db():
 # ============================================================
 # 🧠 Global State Tracking
 # ============================================================
-last_state = {}         # Last observed router state (UP/DOWN/SPIKING)
-notified_state = {}     # Last state that was notified
-spiking_active = {}     # Track SPIKING events (for recovery)
+last_state = {}
+notified_state = {}
+spiking_active = {}
 
 # ============================================================
 # ⏱️ Timing Settings
 # ============================================================
-DELAY = 180                   # Debounce before notifying (in seconds)
-RECOVERY_STABLE_SECONDS = 120 # 2 minutes stability before recovery message
-FLAP_WINDOW = 120             # Time window for flap detection
-FLAP_THRESHOLD = 3            # Minimum changes within window to trigger spiking
+DELAY = 180
+RECOVERY_STABLE_SECONDS = 120
+FLAP_WINDOW = 120
+FLAP_THRESHOLD = 3
+SPIKING_DEBOUNCE_SECONDS = 10  # 🆕 Prevents duplicate SPIKING notifications
 
 # ============================================================
-# ⚡ Default Message Templates (fallback only)
+# ⚡ SPIKING ALERT MESSAGES
 # ============================================================
 SPIKING_MESSAGES = {
     ("ISP1-PING", "G1"): "⚠️ Primary ISP is experiencing high latency. Switched to secondary temporarily.",
     ("ISP2-PING", "G1"): "⚠️ Secondary ISP latency detected. Primary remains active.",
-    ("ISP1-PING", "G2"): "⚠️ ISP connection high ping detected. Please standby.",
-}
-
-SPIKING_RECOVERY_MESSAGES = {
-    ("ISP1-PING", "G1"): "✅ Primary ISP stable again. Back to normal performance.",
-    ("ISP2-PING", "G1"): "✅ Secondary ISP stable again. Traffic normal.",
-    ("ISP1-PING", "G2"): "✅ ISP connection stable again. Thank you for your patience.",
+    ("ISP1-PING", "G2"): "⚠️ PLDT high ping detected. Please standby.",
+    ("ISP1-CONNECTION", "G1"): "⚠️ Primary internet is unstable, timeout detected. Switched to secondary temporarily.",
+    ("ISP2-CONNECTION", "G1"): "⚠️ Secondary ISP is unstable. No worries, Primary remains active.",
+    ("ISP1-CONNECTION", "G2"): "⚠️ PLDT is unstable. Please standby waiting to be fixed.",
 }
 
 # ============================================================
-# 🔍 Template Finder (Priority-based)
+# ✅ SPIKING RECOVERY MESSAGES
+# ============================================================
+SPIKING_RECOVERY_MESSAGES = {
+    ("ISP1-PING", "G1"): "✅ Primary ISP stable again. Back to normal performance.",
+    ("ISP2-PING", "G1"): "✅ Secondary ISP stable again. Traffic normal.",
+    ("ISP1-PING", "G2"): "✅ PLDT stable again. Thank you for your patience.",
+    ("ISP1-CONNECTION", "G1"): "✅ Primary internet is stable again. Back to normal performance.",
+    ("ISP2-CONNECTION", "G1"): "✅ Secondary ISP is stable again. Primary remains active.",
+    ("ISP1-CONNECTION", "G2"): "✅ PLDT connection is stable again. Thank you for your patience.",
+}
+
+# ============================================================
+# 🔍 Template Finder
 # ============================================================
 def find_template(db: Session, connection_name: Optional[str], group_name: Optional[str], state: str):
     s = (state or "").upper()
@@ -92,106 +102,169 @@ def find_template(db: Session, connection_name: Optional[str], group_name: Optio
     return None
 
 # ============================================================
-# 💬 Notification Sender
+# 💬 Notification Sender (simplified)
 # ============================================================
 def notify_clients(db: Session, connection_name: str = None, group_name: str = None, state: str = None):
-    """Send templated message to clients using DB templates with auto-creation fallback."""
     state_key = (state or "").upper()
-    template = find_template(db, connection_name, group_name, state_key)
-
     conn_type = (connection_name or "").lower()
 
-    # 🚫 Skip non-customer links for all main states
-    if not (
-        "vendo" in conn_type or "private" in conn_type or "isp" in conn_type):
-      if state_key in ("UP", "DOWN", "SPIKING", "RECOVERY"):
-        logger.info(
-          f"🛑 Skipping {state_key} notification for non-mt link: {connection_name}")
-        return
+    # ------------------------------------------------------------
+    # 🏷️ Dynamic ISP Label Resolver
+    # ------------------------------------------------------------
+    def get_label(conn_name: str, grp: str) -> Optional[str]:
+        name, grp = (conn_name or "").upper(), (grp or "").upper()
+        if grp == "G1":
+            if name.startswith("ISP1-"): return "Primary Internet"
+            if name.startswith("ISP2-"): return "Secondary Internet"
+        elif grp == "G2" and name.startswith("ISP1-"):
+            return "PLDT"
+        return None
 
-    # Auto-create if not found
+    isp_label = get_label(connection_name, group_name)
+
+    # ------------------------------------------------------------
+    # 🧠 Template Fetch or Auto-create
+    # ------------------------------------------------------------
+    template = find_template(db, connection_name, group_name, state_key)
     if not template:
-        content = None
-        if state_key == "SPIKING":
-            content = SPIKING_MESSAGES.get((connection_name, group_name))
-        elif state_key == "UP" and last_state.get(f"{connection_name}_{group_name}") == "SPIKING":
-            content = SPIKING_RECOVERY_MESSAGES.get((connection_name, group_name))
-
+        content = build_auto_template_content(conn_type, connection_name, isp_label, state_key, group_name)
         if not content:
-            if state_key == "DOWN":
-                if "vendo" in conn_type:
-                    content = "Your VENDO is currently down. Please check the connection."
-                elif "private" in conn_type:
-                    content = "Your PRIVATE connection is currently down. Please check connections."
-                else:
-                    logger.info(f"🛑 Skipping DOWN notification for non-customer link: {connection_name}")
-                    return
-            elif state_key == "UP":
-                if "vendo" in conn_type:
-                    content = "Your VENDO is now up and running."
-                elif "private" in conn_type:
-                    content = "Your PRIVATE connection is now up and running."
-                else:
-                    logger.info(f"🛑 Skipping UP notification for non-customer link: {connection_name}")
-                    return
+            logger.info(f"⏩ Skipping auto-template for {connection_name}/{state_key}")
+            return
 
-        preferred_title = f"{connection_name.upper()}-{group_name.upper()}-{state_key}"
-        template = models.Template(
-            title=preferred_title,
-            content=content or f"Notification: {preferred_title}"
-        )
+        title = f"{(connection_name or '').upper()}-{(group_name or '').upper()}-{state_key}"
+        template = models.Template(title=title, content=content)
         db.add(template)
         db.commit()
         db.refresh(template)
-        logger.info(f"🧩 Auto-created template '{preferred_title}' for {connection_name}/{group_name}/{state_key}")
+        logger.info(f"🧩 Auto-created template '{title}'")
 
-    # Determine recipients
-    conn_lower = (connection_name or "").lower()
-    is_local = "vendo" in conn_lower or "private" in conn_lower
-
+    # ------------------------------------------------------------
+    # 👥 Recipients (Clients + Admins)
+    # ------------------------------------------------------------
     query = db.query(models.Client)
-    if is_local:
-        query = query.filter(
-            models.Client.connection_name == connection_name,
-            models.Client.group_name == group_name,
-        )
-    else:
-        query = query.filter(models.Client.group_name == group_name)
+    base_filter = [models.Client.group_name == group_name]
+    if connection_name and (connection_name.upper() != "ADMIN") and any(k in conn_type for k in ("vendo", "private")):
+        base_filter.append(models.Client.connection_name == connection_name)
 
-    clients = query.all()
+    recipients = query.filter(*base_filter).all()
+    admins = query.filter(models.Client.connection_name.ilike("ADMIN"), models.Client.group_name == group_name).all()
+    recipients = list({c.id: c for c in recipients + admins}.values())
 
-    for client in clients:
+    # ------------------------------------------------------------
+    # 💬 Send Notifications
+    # ------------------------------------------------------------
+    for client in recipients:
         if getattr(client, "status", None) == BillingStatus.CUTOFF:
-            logger.info(f"⏩ Skipping {client.name} ({connection_name}) – CUTOFF")
+            logger.info(f"⏩ Skipping {client.name} – CUTOFF")
             continue
+
+        final_msg = personalize_message(template.content, conn_type, connection_name, group_name, isp_label, client)
+        if not final_msg:
+            logger.warning(f"⚠️ Empty message for {client.name}")
+            continue
+
         try:
-            resp = send_message(client.messenger_id, template.content)
+            resp = send_message(client.messenger_id, final_msg)
             db.add(models.MessageLog(
                 client_id=client.id,
                 template_id=template.id,
                 status=resp.get("message_id", "failed"),
             ))
             db.commit()
-            logger.info(f"📩 Notified {client.name} ({connection_name}/{group_name}) with '{template.title}'")
+            logger.info(f"📩 Notified {client.name} ({connection_name}/{group_name})")
         except Exception as e:
             logger.error(f"❌ Failed sending to {client.name}: {e}")
+
+# ============================================================
+# 🧩 Helper: Build Auto Template Content
+# ============================================================
+def build_auto_template_content(conn_type, name, label, state_key, group_name):
+    name_up = name or ""
+    label = label or f"ISP '{name_up}'"
+
+    if state_key == "SPIKING":
+        if "private" in conn_type:
+            return f"⚠️ '{name_up}' is experiencing instability (spiking). Please check cables or plug."
+        if "vendo" in conn_type:
+            return f"⚠️ VENDO link '{name_up}' is unstable. Please check indicator light."
+        if "isp" in conn_type:
+            return f"⚠️ {label} is unstable or experiencing latency."
+
+    elif state_key == "DOWN":
+        if "vendo" in conn_type:
+            return f"⚠️ VENDO '{name_up}' is currently down. Please check cables and indicator lights."
+        if "private" in conn_type:
+            return f"⚠️ '{name_up}' is currently down. Kindly inspect cables and plugs."
+        if "isp" in conn_type:
+            return f"⚠️ {label} is currently down. Please monitor the provider."
+
+    elif state_key == "UP":
+        if "vendo" in conn_type:
+            return f"✅ VENDO '{name_up}' is now up and running smoothly."
+        if "private" in conn_type:
+            return f"✅ '{name_up}' is now up and stable."
+        if "isp" in conn_type:
+            return f"✅ {label} is back online. Service restored."
+
+    elif state_key == "UP" and last_state.get(f"{name_up}_{group_name}") == "SPIKING":
+        return f"✅ {label} is now stable again."
+
+    return None
+
+# ============================================================
+# 🧩 Helper: Personalize message per client
+# ============================================================
+def personalize_message(content, conn_type, name, group, isp_label, client):
+    if not content:
+        return None
+
+    msg = content
+
+    # Replace ISP markers
+    if group == "G1":
+        msg = msg.replace("'ISP1-CONNECTION'", "Primary Internet") \
+                 .replace("'ISP2-CONNECTION'", "Secondary Internet") \
+                 .replace("'ISP1-PING'", "Primary Internet") \
+                 .replace("'ISP2-PING'", "Secondary Internet")
+    elif group == "G2":
+        msg = msg.replace("'ISP1-CONNECTION'", "PLDT") \
+                 .replace("'ISP1-PING'", "PLDT")
+
+    # Remove “Your connection” for ISP-type
+    if "isp" in conn_type:
+        msg = msg.replace("Your connection ", "").strip()
+
+    # Adjust for admins
+    if (client.connection_name or "").upper() == "ADMIN":
+        msg = msg.replace("Your connection ", "").replace("Your vendo link ", "").strip()
+    elif not "isp" in conn_type and name and name in msg and "Your connection" not in msg:
+        # Add "Your connection" prefix
+        idx = msg.find(name)
+        if idx != -1:
+            quote_idx = msg.rfind("'", 0, idx)
+            insert_pos = quote_idx if quote_idx != -1 else idx
+            msg = msg[:insert_pos] + "Your connection " + msg[insert_pos:]
+
+    return msg.strip()
+
 
 # ============================================================
 # ⏳ Debounced Notification
 # ============================================================
 def schedule_notify(state_key, connection_name, group_name, new_state):
+    if new_state == "SPIKING":
+        logger.info(f"[{state_key}] Skipping delayed schedule for SPIKING")
+        return
+
     def task():
         logger.info(f"[{state_key}] Waiting {DELAY}s before confirming {new_state}")
         time.sleep(DELAY)
         if last_state.get(state_key) == new_state:
-            prev = notified_state.get(state_key)
-            if prev != new_state:
-                db = SessionLocal()
-                try:
+            if notified_state.get(state_key) != new_state:
+                with SessionLocal() as db:
                     notify_clients(db, connection_name, group_name, new_state)
                     notified_state[state_key] = new_state
-                finally:
-                    db.close()
             else:
                 logger.info(f"[{state_key}] {new_state} already notified, skipping")
         else:
@@ -200,81 +273,96 @@ def schedule_notify(state_key, connection_name, group_name, new_state):
     threading.Thread(target=task, daemon=True).start()
 
 # ============================================================
-# 🌐 WebSocket Broadcast Helper
-# ============================================================
-def broadcast_state_change(ws_manager, client, connection_name, new_state):
-    if not ws_manager:
-        return
-    payload = {
-        "event": "state_update",
-        "id": int(getattr(client, "id", 0)),
-        "messenger_id": getattr(client, "messenger_id", None),
-        "client": getattr(client, "name", "Unknown"),
-        "connection_name": connection_name,
-        "state": new_state,
-        "timestamp": time.time(),
-    }
-    try:
-        ws_manager.safe_broadcast(payload)
-    except Exception as e:
-        logger.error(f"WebSocket broadcast failed: {e}")
-
-# ============================================================
-# 🧩 Core State Processor
+# 🧩 Core State Processor (Spam-Protected & Fixed)
 # ============================================================
 def process_rule(db, client, connection_name, last_state_value, group_name, ws_manager=None):
     key = f"{connection_name}_{group_name}"
 
-    # SPIKING DETECTED
-    if last_state_value == "SPIKING":
-        logger.info(f"⚠️ {key} detected SPIKING")
-        broadcast_state_change(ws_manager, client or models.Client(id=0, name="Unknown"), connection_name, "SPIKING")
+    # 🧩 Ignore if state hasn't changed (prevents rebroadcast spam)
+    if last_state.get(key) == last_state_value:
+        return
 
-        if notified_state.get(key) == "SPIKING":
-            logger.info(f"⏩ SPIKING already notified for {key}, skipping")
-            last_state[key] = "SPIKING"
+    # 🆕 SPIKING handling with debounce + safe placeholder broadcast
+    if last_state_value == "SPIKING":
+        last_time = spiking_active.get(key, 0)
+        if time.time() - last_time < SPIKING_DEBOUNCE_SECONDS:
+            logger.info(f"⏩ Ignoring duplicate SPIKING within {SPIKING_DEBOUNCE_SECONDS}s for {key}")
             return
 
-        notify_clients(db, connection_name, group_name, "SPIKING")
-        notified_state[key] = "SPIKING"
-        spiking_active[key] = time.time()
+        logger.info(f"⚠️ {key} detected SPIKING")
+
+        placeholder = client or type(
+            "Placeholder", (), {"id": 0, "messenger_id": None, "name": "Unknown"}
+        )()
+
+        broadcast_state_change(ws_manager, placeholder, connection_name, "SPIKING")
+
+        if notified_state.get(key) != "SPIKING":
+            notify_clients(db, connection_name, group_name, "SPIKING")
+            notified_state[key] = "SPIKING"
+            spiking_active[key] = time.time()
         last_state[key] = "SPIKING"
         return
 
-    # RECOVERY FROM SPIKING
+    # 🧩 SPIKING → UP recovery handling
     if last_state.get(key) == "SPIKING" and last_state_value == "UP":
-        logger.info(f"🧩 {key} recovering from SPIKING – scheduling recovery in {RECOVERY_STABLE_SECONDS}s")
-
         def recovery_task():
             time.sleep(RECOVERY_STABLE_SECONDS)
-            db2 = SessionLocal()
-            try:
+            with SessionLocal() as db2:
                 if last_state.get(key) == "UP" and spiking_active.get(key):
                     notify_clients(db2, connection_name, group_name, "UP")
                     logger.info(f"✅ Sent recovery message for {key}")
                     spiking_active.pop(key, None)
                     notified_state[key] = "UP"
-            except Exception as e:
-                logger.error(f"❌ Recovery task failed for {key}: {e}")
-            finally:
-                db2.close()
 
         threading.Thread(target=recovery_task, daemon=True).start()
 
-    # NORMAL UP/DOWN HANDLING
+    # 🔄 Normal state change handling
     if client and client.state != last_state_value:
         logger.info(f"🔄 {client.name} ({connection_name}/{group_name}) {client.state} → {last_state_value}")
         broadcast_state_change(ws_manager, client, connection_name, last_state_value)
-        schedule_notify(key, connection_name, group_name, last_state_value)
+        if last_state_value not in ["SPIKING"]:
+            schedule_notify(key, connection_name, group_name, last_state_value)
         client.state = last_state_value
         db.add(client)
     else:
-        broadcast_state_change(ws_manager, models.Client(id=0, name="Unknown"), connection_name, last_state_value)
+        # ⚡ Broadcast only if previous state differs
+        prev_state = last_state.get(key)
+        if prev_state != last_state_value:
+            placeholder = client or type(
+                "Placeholder", (), {"id": 0, "messenger_id": None, "name": "Unknown"}
+            )()
+            broadcast_state_change(ws_manager, placeholder, connection_name, last_state_value)
 
     last_state[key] = last_state_value
 
 # ============================================================
-# 🔁 Polling Loop with Smart Flap Detection
+# 📡 WebSocket Broadcaster (Safe Fallback)
+# ============================================================
+def broadcast_state_change(ws_manager, client, connection_name, state_value):
+    """Safely broadcast state changes to all connected WebSocket clients."""
+    try:
+        if not ws_manager:
+            logger.debug(f"🕸️ No ws_manager available — skipping broadcast for {connection_name}")
+            return
+
+        payload = {
+            "client_id": getattr(client, "id", 0),
+            "client_name": getattr(client, "name", "Unknown"),
+            "connection_name": connection_name,
+            "state": state_value,
+            "timestamp": time.time(),
+        }
+
+        # Send to all active WebSocket clients
+        ws_manager.broadcast(payload)
+        logger.info(f"📢 Broadcasted {state_value} for {connection_name}")
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to broadcast state for {connection_name}: {e}")
+
+
+# ============================================================
+# 🔁 Polling Loop
 # ============================================================
 def poll_netwatch(host, username, password, interval=30, ws_manager=None, group_name=None):
     mikrotik = MikroTikClient(host, username, password)
@@ -287,38 +375,43 @@ def poll_netwatch(host, username, password, interval=30, ws_manager=None, group_
             continue
 
         rules = mikrotik.get_netwatch() or []
-        db = next(get_db())
 
-        try:
-            for rule in rules:
-                connection_name = rule.get("comment") or rule.get("host")
-                raw_status = (rule.get("status") or "unknown").upper()
-                state_val = raw_status
-                key = f"{connection_name}_{group_name}"
-                now = time.time()
+        # 🆕 Deduplicate rules by comment
+        seen = set()
+        unique_rules = []
+        for rule in rules:
+            comment = rule.get("comment") or rule.get("host")
+            if comment not in seen:
+                seen.add(comment)
+                unique_rules.append(rule)
+        rules = unique_rules
 
-                # Maintain rolling history
-                history = [(t, s) for (t, s) in change_history.get(key, []) if now - t < FLAP_WINDOW]
-                if not history or history[-1][1] != state_val:
-                    history.append((now, state_val))
-                change_history[key] = history
+        with SessionLocal() as db:
+            try:
+                for rule in rules:
+                    connection_name = rule.get("comment") or rule.get("host")
+                    state_val = (rule.get("status") or "UNKNOWN").upper()
+                    key = f"{connection_name}_{group_name}"
+                    now = time.time()
 
-                # Detect flapping/spiking
-                if len(history) >= FLAP_THRESHOLD and len({s for _, s in history}) > 1:
-                    state_val = "SPIKING"
-                    change_history[key] = []
-                    logger.info(f"🚨 Detected SPIKING for {connection_name} ({group_name}) history={history}")
+                    history = [(t, s) for (t, s) in change_history.get(key, []) if now - t < FLAP_WINDOW]
+                    if not history or history[-1][1] != state_val:
+                        history.append((now, state_val))
+                    change_history[key] = history
 
-                # Process rule
-                client = db.query(models.Client).filter(models.Client.connection_name == connection_name).first()
-                effective_group = getattr(client, "group_name", None) or group_name
-                process_rule(db, client, connection_name, state_val, effective_group, ws_manager)
+                    if len(history) >= FLAP_THRESHOLD and len({s for _, s in history}) > 1:
+                        state_val = "SPIKING"
+                        change_history[key] = []
+                        logger.info(f"🚨 Detected SPIKING for {connection_name} ({group_name}) history={history}")
+
+                    client = db.query(models.Client).filter(models.Client.connection_name == connection_name).first()
+                    effective_group = getattr(client, "group_name", group_name)
+                    process_rule(db, client, connection_name, state_val, effective_group, ws_manager)
+
                 db.commit()
-        except Exception as e:
-            db.rollback()
-            logger.error(f"❌ Error polling {host}: {e}")
-        finally:
-            db.close()
+            except Exception as e:
+                db.rollback()
+                logger.error(f"❌ Error polling {host}: {e}")
 
         time.sleep(interval)
 

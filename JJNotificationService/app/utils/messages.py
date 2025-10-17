@@ -87,16 +87,15 @@ def safe_format(template: str, **kwargs) -> str:
 # =====================================================
 def get_messages(group_name: str):
     """Return customized notices depending on client location."""
-    payment_location = "Sitio Coronado, Malalag Cogon"
+    group_name_clean = (group_name or "").upper().strip()
 
-    if any(keyword in group_name for keyword in ["Aliwanay", "Surallah", "Velez"]):
-        payment_location = "Sitio Aliwanay, Naci, Surallah, at Velez Compound"
-
-    # ✅ Fix: only replace the static text, do NOT pre-format the template
-    due_notice = DUE_NOTICE_TEMPLATE.replace("{payment_location}", payment_location)
+    payment_location = "Sitio Coronado, Malalag Cogon"  # default G1
+    if group_name_clean in ["G2", "ALIWANAY", "SURALLAH", "VELEZ"]:
+      payment_location = "Sitio Aliwanay, Naci, Surallah, at Velez Compound"
 
     return {
-        "THROTTLE_NOTICE": THROTTLE_NOTICE_TEMPLATE,
-        "DISCONNECTION_NOTICE": DISCONNECTION_NOTICE_TEMPLATE,
-        "DUE_NOTICE": due_notice,
+      "THROTTLE_NOTICE": THROTTLE_NOTICE_TEMPLATE,
+      "DISCONNECTION_NOTICE": DISCONNECTION_NOTICE_TEMPLATE,
+      "DUE_NOTICE": DUE_NOTICE_TEMPLATE,  # keep placeholders intact
+      "PAYMENT_LOCATION": payment_location,  # pass separately
     }

@@ -1,14 +1,27 @@
 import os
+import json
 import requests
 from dotenv import load_dotenv
 
 load_dotenv()
 
 PAGE_ACCESS_TOKEN = os.getenv("PAGE_ACCESS_TOKEN")
-ENABLE_MESSENGER_SEND = os.getenv("ENABLE_MESSENGER_SEND", "true").lower() == "true"
 
-print("PAGE_ACCESS_TOKEN", PAGE_ACCESS_TOKEN)
-print("ENABLE_MESSENGER_SEND", ENABLE_MESSENGER_SEND)
+# Path to the settings file
+SETTINGS_FILE = "app/config/settings.json"
+
+def is_messenger_enabled() -> bool:
+    """
+    Check dynamically if Messenger sending is enabled.
+    Falls back to .env if settings.json does not exist.
+    """
+    try:
+        with open(SETTINGS_FILE, "r") as f:
+            data = json.load(f)
+            return data.get("ENABLE_MESSENGER_SEND", True)
+    except FileNotFoundError:
+        # fallback to .env value for backward compatibility
+        return os.getenv("ENABLE_MESSENGER_SEND", "true").lower() == "true"
 
 
 def send_message(messenger_id: str, message: str) -> dict:
@@ -16,6 +29,8 @@ def send_message(messenger_id: str, message: str) -> dict:
     Send a Messenger message if ENABLE_MESSENGER_SEND is true.
     Returns {"skipped": True} if sending is disabled.
     """
+    ENABLE_MESSENGER_SEND = is_messenger_enabled()
+
     if not ENABLE_MESSENGER_SEND:
         return {"skipped": True, "messenger_id": messenger_id, "message": message}
 

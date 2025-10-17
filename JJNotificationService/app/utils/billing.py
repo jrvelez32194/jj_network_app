@@ -18,7 +18,6 @@ logger = logging.getLogger("billing")
 PH_TZ = pytz.timezone("Asia/Manila")
 BILLING_FILTER = os.getenv("BILLING_FILTER", "PRIVATE").upper()
 
-
 # =====================================================
 # ✅ Router Management
 # =====================================================
@@ -77,6 +76,7 @@ def enforce_billing_rules(
     mode: str = "enforce",
 ):
     """Apply billing rules based on overdue days and mode ('notification' or 'enforce')."""
+
     if days_overdue < 0:
         logger.info(f"💰 [{client.name}] Paid in advance — next billing will apply on {last_billing_date}.")
         return
@@ -89,6 +89,7 @@ def enforce_billing_rules(
 
     try:
         messages = get_messages(client.group_name or "")
+        payment_location = messages.get("PAYMENT_LOCATION", "Sitio Coronado, Malalag Cogon")
 
         # --- DUE TODAY ---
         if days_overdue == 0:
@@ -105,6 +106,7 @@ def enforce_billing_rules(
                     messages["DUE_NOTICE"],
                     due_date=last_billing_date.strftime("%B %d, %Y"),
                     amount=amount_value,
+                    payment_location=payment_location,
                 )
                 send_message(client.messenger_id, message_text)
                 logger.info(f"📩 [{client.name}] DUE notice sent.")
@@ -135,7 +137,8 @@ def enforce_billing_rules(
                 logger.info(f"⚠️ [{client.name}] Enforced limited speed (5M/5M).")
 
             if mode == "notification":
-                send_message(client.messenger_id, messages["THROTTLE_NOTICE"])
+                throttle_msg = safe_format(messages["THROTTLE_NOTICE"], payment_location=payment_location)
+                send_message(client.messenger_id, throttle_msg)
                 logger.info(f"📩 [{client.name}] Throttle notice sent.")
             return
 
@@ -149,13 +152,14 @@ def enforce_billing_rules(
                 logger.info(f"⛔ [{client.name}] Client cutoff enforced.")
 
             if mode == "notification":
-                send_message(client.messenger_id, messages["DISCONNECTION_NOTICE"])
+                disconnection_msg = safe_format(messages["DISCONNECTION_NOTICE"], payment_location=payment_location)
+                send_message(client.messenger_id, disconnection_msg)
                 logger.info(f"📩 [{client.name}] Disconnection notice sent.")
 
     except Exception as e:
         logger.error(f"Billing rule failed for {client.name}: {e}")
     finally:
-        db.add(client)  # removed per-client commit
+        db.add(client)
 
 
 # =====================================================
@@ -190,10 +194,11 @@ def check_billing(db: Session, mode: str = "enforce", group_name: str = None):
     clients = query.all()
     total = cnt_due = cnt_limited = cnt_cutoff = cnt_skipped = 0
 
+    logger.info(f"🕒 Billing started at {today.strftime('%Y-%m-%d %H:%M:%S %Z')}")
     logger.info(f"🔔 Starting billing run (mode={mode}) for group='{group_name}' — {len(clients)} clients.")
 
     for client in clients:
-        db.refresh(client)  # ensure latest state from DB
+        db.refresh(client)
         total += 1
 
         if not client.billing_date or not client.connection_name:
@@ -225,7 +230,9 @@ def check_billing(db: Session, mode: str = "enforce", group_name: str = None):
         enforce_billing_rules(client, mikrotik, days_overdue, last_billing_date, db, mode)
 
         if mode == "enforce" and client.status != old_status:
-            logger.info(f"[{client.name}] ({client.group_name}) via {mikrotik.host} → {old_status.value} → {client.status.value}")
+            logger.info(
+                f"[{client.name}] ({client.group_name}) via {mikrotik.host} → {old_status.value} → {client.status.value}"
+            )
             safe_broadcast({
                 "event": "billing_update",
                 "client_id": client.id,
@@ -235,10 +242,18 @@ def check_billing(db: Session, mode: str = "enforce", group_name: str = None):
             })
 
     db.commit()
-    logger.info(
-        f"🧾 Billing complete (mode={mode}, group={group_name}) — total={total}, due={cnt_due}, "
-        f"limited={cnt_limited}, cutoff={cnt_cutoff}, skipped={cnt_skipped}"
-    )
+    summary = {
+        "group": group_name,
+        "mode": mode,
+        "total": total,
+        "due": cnt_due,
+        "limited": cnt_limited,
+        "cutoff": cnt_cutoff,
+        "skipped": cnt_skipped,
+    }
+
+    logger.info(f"🧾 Billing complete — {summary}")
+    return summary
 
 
 # =====================================================

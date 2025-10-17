@@ -4,6 +4,7 @@ import ClientsPage from "./features/clients/ClientsPage";
 import TemplatesPage from "./features/templates/TemplatesPage";
 import MessageLogs from "./features/messages/MessageLogs";
 import SystemMonitor from "./features/systemMonitor/SystemMonitor";
+import MessengerSettingsPage from "./features/settings/MessengerSettingsPage"; // ✅ NEW
 import NotFound from "./components/NotFound";
 import "./index.css";
 
@@ -28,10 +29,16 @@ function App() {
             }
           />
 
-          {/* Other pages */}
+          {/* 📋 Core Pages */}
           <Route path="/clients" element={<ClientsPage />} />
           <Route path="/templates" element={<TemplatesPage />} />
           <Route path="/message-logs" element={<MessageLogs />} />
+          <Route
+            path="/settings/messenger"
+            element={<MessengerSettingsPage />}
+          />
+
+          {/* ❌ Fallback */}
           <Route path="*" element={<NotFound />} />
         </Route>
       </Routes>

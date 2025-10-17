@@ -1,4 +1,4 @@
-import { apiSlice } from "../api/apiSlice";
+import { apiSlice } from "./apiSlice";
 export const templatesApi = apiSlice.injectEndpoints({
   endpoints: (builder) => ({
     getTemplates: builder.query({

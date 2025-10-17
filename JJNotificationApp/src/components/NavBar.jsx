@@ -26,6 +26,10 @@ const NavBar = () => {
             <Link to="/message-logs" className="hover:text-gray-300">
               Message Logs
             </Link>
+            {/* ⚙️ New Settings Link */}
+            <Link to="/settings/messenger" className="hover:text-gray-300">
+              Settings
+            </Link>
           </div>
 
           {/* Mobile Menu Button */}
@@ -68,6 +72,14 @@ const NavBar = () => {
             onClick={() => setIsOpen(false)}
           >
             Message Logs
+          </Link>
+          {/* ⚙️ New Settings Link for Mobile */}
+          <Link
+            to="/settings/messenger"
+            className="block hover:text-gray-300"
+            onClick={() => setIsOpen(false)}
+          >
+            Settings
           </Link>
         </div>
       )}

@@ -1,5 +1,9 @@
 import React from "react";
 import { MoreVertical } from "lucide-react";
+import {
+  useNotifyClientMutation,
+  useNotifyAllClientsMutation,
+} from "../../api/forceBillingApi";
 
 const FloatingActionMenu = ({
   fabOpen,
@@ -15,12 +19,54 @@ const FloatingActionMenu = ({
 }) => {
   const isDisabled = selectedIds.length === 0;
 
+  // 🧠 RTK Mutations
+  const [notifyClient, { isLoading: isNotifyingClient }] =
+    useNotifyClientMutation();
+  const [notifyAllClients, { isLoading: isNotifyingAll }] =
+    useNotifyAllClientsMutation();
+
+  // 💬 Notify Selected Clients (Billing)
+  const handleNotifySelectedBilling = async () => {
+    if (isDisabled) return;
+    if (
+      !window.confirm(
+        `Send billing notification to ${selectedIds.length} client(s)?`
+      )
+    )
+      return;
+    try {
+      for (const id of selectedIds) {
+        await notifyClient(id).unwrap();
+      }
+      alert("✅ Billing notifications sent successfully!");
+    } catch (err) {
+      console.error(err);
+      alert("❌ Failed to send billing notifications.");
+    } finally {
+      setFabOpen(false);
+    }
+  };
+
+  // 📢 Notify All Clients
+  const handleNotifyAllBilling = async () => {
+    if (!window.confirm("Send billing notification to ALL clients?")) return;
+    try {
+      await notifyAllClients().unwrap();
+      alert("✅ Billing notifications sent to all clients!");
+    } catch (err) {
+      console.error(err);
+      alert("❌ Failed to send billing notifications to all clients.");
+    } finally {
+      setFabOpen(false);
+    }
+  };
+
   return (
     <div className="sm:hidden fixed bottom-6 right-6 flex flex-col items-end space-y-2 z-50">
       {/* ✅ FAB Actions */}
       {fabOpen && (
         <div className="flex flex-col items-end space-y-2 mb-2 transition-all duration-300">
-          {/* Delete */}
+          {/* 🗑 Delete */}
           <button
             onClick={() => {
               handleBulkDelete();
@@ -36,7 +82,7 @@ const FloatingActionMenu = ({
             🗑 Delete
           </button>
 
-          {/* Paid */}
+          {/* 💰 Set Paid */}
           <button
             onClick={() => {
               handleBulkSetPaid();
@@ -52,7 +98,7 @@ const FloatingActionMenu = ({
             💰 Set Paid
           </button>
 
-          {/* Unpaid */}
+          {/* ❌ Set Unpaid */}
           <button
             onClick={() => {
               handleBulkSetUnpaid();
@@ -68,7 +114,7 @@ const FloatingActionMenu = ({
             ❌ Set Unpaid
           </button>
 
-          {/* Send Messenger */}
+          {/* 📤 Send Messenger */}
           <button
             onClick={() => {
               handleOpenSend();
@@ -84,32 +130,54 @@ const FloatingActionMenu = ({
             📤 Send Messenger
           </button>
 
-          {/* Sync */}
+          {/* 💬 Notify Billing (Selected) */}
+          <button
+            onClick={handleNotifySelectedBilling}
+            disabled={isDisabled || isNotifyingClient}
+            className={`p-3 rounded-full shadow-lg text-white ${
+              isDisabled
+                ? "bg-gray-400 cursor-not-allowed"
+                : "bg-indigo-600 hover:bg-indigo-700"
+            }`}
+          >
+            {isNotifyingClient ? "⏳ Notifying..." : "💬 Notify Billing"}
+          </button>
+
+          {/* 📢 Notify All Billing */}
+          <button
+            onClick={handleNotifyAllBilling}
+            disabled={isNotifyingAll}
+            className={`p-3 rounded-full shadow-lg text-white bg-blue-600 hover:bg-blue-700`}
+          >
+            {isNotifyingAll ? "⏳ Notifying..." : "📢 Notify All"}
+          </button>
+
+          {/* 🔄 Sync */}
           <button
             onClick={() => {
               handleSyncClients();
               setFabOpen(false);
             }}
-            className="p-3 rounded-full shadow-lg bg-blue-600 text-white hover:bg-blue-700"
+            className="p-3 rounded-full shadow-lg bg-purple-600 text-white hover:bg-purple-700"
           >
-            🔄 Sync from Messenger
+            🔄 Sync
           </button>
 
-          {/* Add Client */}
+          {/* ➕ Add Client */}
           <button
             onClick={() => {
               setEditingClient(null);
               setIsDrawerOpen(true);
               setFabOpen(false);
             }}
-            className="p-3 rounded-full shadow-lg bg-indigo-600 text-white hover:bg-indigo-700"
+            className="p-3 rounded-full shadow-lg bg-teal-600 text-white hover:bg-teal-700"
           >
             ➕ Add Client
           </button>
         </div>
       )}
 
-      {/* ✅ FAB Toggle Button */}
+      {/* ✅ FAB Toggle */}
       <button
         onClick={() => setFabOpen(!fabOpen)}
         className="p-4 rounded-full bg-purple-600 text-white shadow-xl hover:bg-purple-700 transition-transform transform hover:scale-105"
