@@ -1,0 +1,148 @@
+Heres I want to have in my notify_clients, apply in the message only
+
+for ISP - this will be added to db and will fetch from db if connection_name is match
+
+connection_name 
+ISP1-CONNECTION G1 = Primary Service Provider
+ISP2-CONNECTION G1 = Seconday Service Provider
+ISP-CONNECTION G2 = PLDT
+ISP1-PING G1 = Primary Service Provider
+ISP2-PING G1 = Seconday Service Provider
+ISP-PING G2 = PLDT Provider
+same with spiking
+
+FORMAT
+ISP1-CONNECTION-G1-UP
+ISP2-CONNECTION-G1-UP
+ISP-CONNECTION-G2-UP
+ISP1-CONNECTION-G1-DOWN
+ISP2-CONNECTION-G1-DOWN
+ISP-CONNECTION-G2-DOWN
+
+ISP1-PING-G1-UP
+ISP2-PING-G1-UP
+ISP-PING-G2-UP
+ISP1-PING-G1-DOWN
+ISP2-PING-G1-DOWN
+ISP-PING-G2-DOWN
+
+
+ISP1-CONNECTION-G1-SPIKE-UP
+ISP2-CONNECTION-G1-SPIKE-UP
+ISP-CONNECTION-G2-SPIKE-UP
+ISP1-CONNECTION-G1-SPIKE-DOWN
+ISP2-CONNECTION-G1-SPIKE-DOWN
+ISP-CONNECTION-G2-SPIKE-DOWN
+
+ISP1-PING-G1-SPIKE-UP
+ISP2-PING-G1-SPIKE-UP
+ISP-PING-G2-SPIKE-UP
+ISP1-PING-G1-SPIKE-DOWN
+ISP2-PING-G1-SPIKE-DOWN
+ISP-PING-G2-SPIKE-DOWN
+
+
+
+
+
+for client that connection is not admin, this will send to all client that is not admin
+NORMAL UP/DOWN
+ISP1-CONNECTION-G1-UP - ✅ Primary Service Provider is back online. Service restored.
+ISP1-CONNECTION-G1-DOWN -  ⚠️ Primary Service Provider is currently down. Please wait for restoration.
+ISP1-PING-G1-UP - ✅ Primary Service Provider is now stable and running smoothly.
+ISP1-PING-G1-DOWN -  ⚠️ Primary Service Provider is slow and experiencing high latency.
+
+ISP2-CONNECTION-G1-UP - ✅ Secondary Service Provider is back online Service restored.
+ISP2-CONNECTION-G1-DOWN -  ⚠️ Secondary Service Provider is currently down. Please wait for the restoration.
+ISP2-PING-G1-UP - ✅ Secondary Service Provider is now stable and running smoothly.
+ISP2-PING-G1-DOWN-  ⚠️ Secondary Service Provider is slow and experiencing high latency.
+
+ISP-CONNECTION-G2-UP - ✅ PLDT Provider is back online Service restored.
+ISP-CONNECTION-G2-DOWN -  ⚠️ PLDT Provider is currently down. Please wait for the restoration.
+ISP-PING-G2-UP - ✅ PLDT Provider is now stable and running smoothly.
+ISP-PING-G2-DOWN -  ⚠️ PLDT Provider is slow and experiencing high latency.
+
+SPIKING
+ISP1-CONNECTION-G1-SPIKE-UP - ✅ Primary Service Provider is now stable and running smoothly again.
+ISP1-CONNECTION-G1-SPIKE-DOWN -  ⚠️ Primary Service Provider is slow and unstable or experiencing latency.
+ISP1-PING-G1-SPIKE-UP - ✅ Primary Service Provider is now stable and running smoothly again.
+ISP1-PING-G1-SPIKE-DOWN -  ⚠️ Primary Service Provider is slow and unstable or experiencing latency.
+
+ISP2-CONNECTION-G1-SPIKE-UP- ✅ Secondary Service Provider is now stable and running smoothly again.
+ISP2-CONNECTION-G1-SPIKE-DOWN -  ⚠️ Secondary Service Provider is slow and unstable or experiencing latency.
+ISP2-PING-G1-SPIKE-UP - ✅ Secondary Service Provider is now stable and running smoothly again.
+ISP2-PING-G1-SPIKE-DOWN -  ⚠️ Secondary Service Provider is slow and unstable or experiencing latency.
+
+ISP-CONNECTION-G2-SPIKE-UP - ✅ PLDT Provider is now stable and running smoothly again.
+ISP-CONNECTION-G2-SPIKE-DOWN  -  ⚠️ PLDT Provider is slow and unstable or experiencing latency.
+ISP-PING-G2-SPIKE-UP - ✅ PLDT Provider is now stable and running smoothly again.
+ISP-PING-G2-SPIKE-DOWN -  ⚠️ PLDT Provider is slow and unstable or experiencing latency.
+
+
+
+for client that connection is ADMIN, only send for admin
+NORMAL UP/DOWN
+ISP1-CONNECTION-G1-UP - ✅ Primary Service Provider is back online. Service restored. - MALUNGON
+ISP1-CONNECTION-G1-DOWN -  ⚠️ Primary Service Provider is currently down. Please wait for restoration. - MALUNGON
+ISP1-PING-G1-UP - ✅ Primary Service Provider is now stable and running smoothly. - MALUNGON
+ISP1-PING-G1-DOWN -  ⚠️ Primary Service Provider is slow and experiencing high latency. - MALUNGON
+
+ISP2-CONNECTION-G1-UP - ✅ Secondary Service Provider is back online Service restored. - MALUNGON
+ISP2-CONNECTION-G1-DOWN -  ⚠️ Secondary Service Provider is currently down. Please wait for the restoration. - MALUNGON
+ISP2-PING-G1-UP - ✅ Secondary Service Provider is now stable and running smoothly. - MALUNGON
+ISP2-PING-G1-DOWN-  ⚠️ Secondary Service Provider is slow and experiencing high latency. - MALUNGON
+
+ISP-CONNECTION-G2-UP - ✅ PLDT Provider is back online Service restored. - SURALLAH
+ISP-CONNECTION-G2-DOWN -  ⚠️ PLDT Provider is currently down. Please wait for the restoration. - SURALLAH
+ISP-PING-G2-UP - ✅ PLDT Provider is now stable and running smoothly. - SURALLAH
+ISP-PING-G2-DOWN -  ⚠️ PLDT Provider is slow and experiencing high latency. - SURALLAH
+
+SPIKING
+ISP1-CONNECTION-G1-SPIKE-UP - ✅ Primary Service Provider is now stable and running smoothly again. - MALUNGON
+ISP1-CONNECTION-G1-SPIKE-DOWN -  ⚠️ Primary Service Provider is slow and unstable or experiencing latency. - MALUNGON
+ISP1-PING-G1-SPIKE-UP - ✅ Primary Service Provider is now stable and running smoothly again. - MALUNGON
+ISP1-PING-G1-SPIKE-DOWN -  ⚠️ Primary Service Provider is slow and unstable or experiencing latency. - MALUNGON
+
+ISP2-CONNECTION-G1-SPIKE-UP- ✅ Secondary Service Provider is now stable and running smoothly again. - MALUNGON
+ISP2-CONNECTION-G1-SPIKE-DOWN -  ⚠️ Secondary Service Provider is slow and unstable or experiencing latency. - MALUNGON
+ISP2-PING-G1-SPIKE-UP - ✅ Secondary Service Provider is now stable and running smoothly again. - MALUNGON
+ISP2-PING-G1-SPIKE-DOWN -  ⚠️ Secondary Service Provider is slow and unstable or experiencing latency. - MALUNGON
+
+ISP-CONNECTION-G2-SPIKE-UP - ✅ PLDT Provider is now stable and running smoothly again. - SURALLAH
+ISP-CONNECTION-G2-SPIKE-DOWN  -  ⚠️ PLDT Provider is slow and unstable or experiencing latency. - SURALLAH
+ISP-PING-G2-SPIKE-UP - ✅ PLDT Provider is now stable and running smoothly again. - SURALLAH
+ISP-PING-G2-SPIKE-DOWN -  ⚠️ PLDT Provider is slow and unstable or experiencing latency. - SURALLAH
+
+
+For Vendo and private - this will autocreate if not exist, only send if the client is mapped in vendo or private via connection_name
+
+connection_name
+VENDO
+PRIVATE
+
+
+NORMAL UP/DOWN
+VENDO UP - VENDO {connect_name} is now up and running smoothly.
+VENDO DOWN - VENDO {connect_name} is currently down. Please check cable and indicator light.
+
+SPIKING
+VENDO UP - VENDO {connect_name} is now stable.
+VENDO DOWN - VENDO {connect_name} is currently unstable. Please check cable and indicator light.
+
+for not admin
+NORMAL UP/DOWN
+PRIVATE UP - Your connection is now up and running smoothly.
+PRIVATE DOWN - Your connection is currently down. Please the cable and plug.
+SPIKING
+PRIVATE UP - Your connection is now stable.
+PRIVATE DOWN - Your connection is currently unstable. Please the cable and plug.
+
+for admin
+NORMAL UP/DOWN
+PRIVATE UP - {connection_name} is now up and running smoothly.
+PRIVATE DOWN - {connection_name} is currently down. Please the cable and plug.
+SPIKING
+PRIVATE UP - {connection_name} is now stable.
+PRIVATE DOWN - {connection_name}is currently unstable. Please the cable and plug.
+
+

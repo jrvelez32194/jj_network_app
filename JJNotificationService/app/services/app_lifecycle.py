@@ -123,22 +123,26 @@ class AppLifecycle:
     # 🔹 Continuous Polling
     # ------------------------------------------------------------------
     def start_polling(self):
-        """Continuously poll MikroTik for connection changes in background."""
+      """Continuously poll MikroTik for connection changes in background."""
+      try:
+        router_map = {self.group_name: self.host}
+        logger.info(
+          f"🛰️ [{self.group_name}] start_polling invoked with router_map={router_map}")
 
-        def background_polling():
-            try:
-                start_polling(
-                    username=self.user,
-                    password=self.password,
-                    interval=self.poll_interval,
-                    ws_manager=manager,
-                )
-            except Exception as e:
-                logger.error(f"❌ [{self.group_name}] Polling thread error: {e}")
+        # ✅ Start actual polling threads directly (mikrotik_poll handles threading internally)
+        start_polling(
+          username=self.user,
+          password=self.password,
+          interval=self.poll_interval,
+          ws_manager=manager,
+          router_map=router_map,
+        )
 
-        thread = threading.Thread(target=background_polling, daemon=True)
-        thread.start()
-        logger.info(f"✅ [{self.group_name}] Continuous MikroTik polling started (every {self.poll_interval}s)")
+        logger.info(
+          f"✅ [{self.group_name}] Netwatch polling started via mikrotik_poll.start_polling()")
+
+      except Exception as e:
+        logger.error(f"❌ [{self.group_name}] Polling startup error: {e}")
 
     # ------------------------------------------------------------------
     # 🔹 Scheduler for Billing (with group isolation)
