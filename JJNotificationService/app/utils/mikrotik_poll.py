@@ -374,175 +374,175 @@ def notify_clients(db: Session, template_name: str, connection_name: Optional[st
 # schedule_notify() - thread-safe, with early instability advisory and escalation
 # ============================================================
 def schedule_notify(state_key: str, template_name: str, connection_name: str,
-                    group_name: str, new_state: str):
+    group_name: str, new_state: str):
     """
-    Debounced notifier that:
-      - waits for DELAY seconds of stability before sending regular UP/DOWN
-      - detects flapping (spikes) and sends:
-         * an EARLY instability advisory when flips >= SPIKE_FLAP_THRESHOLD inside SPIKE_FLAP_WINDOW
-         * a SPIKE escalation alert if spiking persists for SPIKE_ESCALATE_SECONDS
-      - enforces per-key cooldowns to avoid spam
+    Enhanced notifier:
+      • Waits for stability before sending regular UP/DOWN.
+      • Detects flapping and sends ONE early instability advisory.
+      • Enforces cooldowns to avoid repeated messages during flapping.
+    Assumes the following globals exist and are thread-safe when accessed with _state_lock:
+      - _state_lock, timers, last_state, notified_state, flip_history, cooldown_state
+      - DELAY, COOLDOWN, SPIKE_FLAP_WINDOW, SPIKE_FLAP_THRESHOLD, SPIKE_ESCALATE_SECONDS
+      - notify_clients, _parse_template_key, _get_metric, _get_isp_token, _get_isp_token
+      - SessionLocal (for DB sessions)
     """
-
     # Avoid duplicate concurrent threads for same state_key
     with _state_lock:
-        running = timers.get(state_key)
-        if running and running.is_alive():
-            logger.info(f"[{state_key}] Notification already scheduled, skipping duplicate.")
-            return
+      running = timers.get(state_key)
+      if running and running.is_alive():
+        logger.info(
+          f"[{state_key}] Notification already scheduled, skipping duplicate.")
+        return
 
     now = time.time()
 
-    # Update flip history for spike detection (thread-safe)
+    # Spike detection and early instability advisory (thread-safe update)
     with _state_lock:
-        entry = flip_history.setdefault(state_key, {
-            "flips": [],
-            "spike_start": None,
-            "spike_notified": False,
-            "early_notified": False,  # tracks the early instability advisory send
-        })
-        entry["flips"].append(now)
-        cutoff = now - SPIKE_FLAP_WINDOW
-        entry["flips"] = [t for t in entry["flips"] if t >= cutoff]
+      entry = flip_history.setdefault(state_key, {
+        "flips": [],
+        "spike_start": None,
+        "spike_notified": False,
+        "early_notified": False,
+      })
+      entry["flips"].append(now)
+      cutoff = now - SPIKE_FLAP_WINDOW
+      entry["flips"] = [t for t in entry["flips"] if t >= cutoff]
 
-        # If flips exceed threshold and spike_start not yet set -> set it
-        if len(entry["flips"]) >= SPIKE_FLAP_THRESHOLD:
-            if entry["spike_start"] is None:
-                entry["spike_start"] = entry["flips"][0]
-                logger.info(f"[{state_key}] Spiking detected, spike_start set to {entry['spike_start']}")
+      # If flips exceed threshold and early advisory not yet sent -> consider sending one
+      if len(entry["flips"]) >= SPIKE_FLAP_THRESHOLD and not entry.get(
+          "early_notified", False):
+        # Build the unstable advisory template key, prefer explicit ISP token if present
+        parts = _parse_template_key(template_name)
+        isp_token = _get_isp_token(parts) or (
+          "ISP1" if "ISP1" in state_key.upper() else None)
+        metric = _get_metric(parts) or "CONNECTION"
+        unstable_template_key = f"{(isp_token or 'ISP1')}-{metric}-{group_name}-DOWN".upper()
 
-            # Early instability advisory: send once per spike event
-            if not entry.get("early_notified", False):
-                # Build a sensible unstable template for ISP1 (we keep naming pattern)
-                # Prefer using CONNECTION metric for early advisory unless template includes PING
-                parts = _parse_template_key(template_name)
-                metric = _get_metric(parts) or "CONNECTION"
-                isp_token = _get_isp_token(parts) or ("ISP1" if "ISP1" in state_key.upper() else None)
+        # Use a separate early cooldown key so early advisories don't repeat too quickly
+        early_cooldown_key = f"{state_key}_early"
+        last_sent = cooldown_state.get(early_cooldown_key, 0)
+        if now - last_sent > COOLDOWN:
+          logger.info(
+            f"[{state_key}] Sending early instability advisory ({unstable_template_key})")
+          db = SessionLocal()
+          try:
+            notify_clients(db, unstable_template_key, connection_name, group_name)
+            entry["early_notified"] = True
+            cooldown_state[early_cooldown_key] = time.time()
+          finally:
+            db.close()
+        else:
+          logger.info(
+            f"[{state_key}] Early advisory in cooldown, skipping duplicate.")
 
-                if isp_token == "ISP1" or (connection_name and "ISP1" in connection_name.upper()) or (template_name and "ISP1" in template_name.upper()):
-                    unstable_template_key = f"{isp_token or 'ISP1'}-{metric}-{group_name}-DOWN".upper()
-                    logger.info(f"[{state_key}] Sending early instability advisory ({unstable_template_key})")
-                    db = SessionLocal()
-                    try:
-                        notify_clients(db, unstable_template_key, connection_name, group_name)
-                        entry["early_notified"] = True
-                        # set cooldown for this key to avoid immediate repeats
-                        cooldown_state[state_key] = time.time()
-                    finally:
-                        db.close()
-
+    # --- Regular stable-state notifier thread ---
     def _task():
-        start = time.time()
-        stable_start = start
-        flap_count = 0
-        logger.info(f"[{state_key}] Waiting {DELAY}s stability window for {new_state}")
+      start = time.time()
+      stable_start = start
+      logger.info(
+        f"[{state_key}] Waiting {DELAY}s stability window for {new_state}")
 
-        while time.time() - start < DELAY:
-            with _state_lock:
-                current = last_state.get(state_key)
-            if current != new_state:
-                flap_count += 1
-                stable_start = time.time()
-                # update flip history while waiting
-                with _state_lock:
-                    entry = flip_history.setdefault(state_key, {"flips": [],
-                                                                "spike_start": None,
-                                                                "spike_notified": False})
-                    entry["flips"].append(now)
-                    entry["flips"] = [t for t in entry["flips"] if t >= cutoff]
-
-                    if len(entry["flips"]) >= SPIKE_FLAP_THRESHOLD:
-                      if entry["spike_start"] is None:
-                        entry["spike_start"] = entry["flips"][0]
-                        logger.info(
-                          f"[{state_key}] Spiking detected, spike_start set to {entry['spike_start']}")
-                logger.info(f"[{state_key}] Flap detected ({current} != {new_state}), resetting timer")
-            if time.time() - stable_start >= 60:  # stable for at least 60s
-                break
-            time.sleep(5)
-
-        # Confirm final stable state
+      # Wait up to DELAY seconds for a stable period (reset if flips occur)
+      while time.time() - start < DELAY:
         with _state_lock:
-            final_state = last_state.get(state_key)
-        if final_state != new_state:
-            logger.info(f"[{state_key}] State changed again before sending, cancelled")
-            with _state_lock:
-                timers.pop(state_key, None)
-            return
+          current = last_state.get(state_key)
+        if current != new_state:
+          # observed flip -> restart stability timer
+          logger.info(
+            f"[{state_key}] Observed flip ({current} != {new_state}), restarting stability wait")
+          start = time.time()
+          stable_start = start
+        # If we have been stable for at least 60s, allow earlier exit
+        if time.time() - stable_start >= 60:
+          break
+        time.sleep(5)
 
-        now_send = time.time()
-
-        # Re-fetch entry safely
+      # Confirm the final state before sending
+      with _state_lock:
+        final_state = last_state.get(state_key)
+      if final_state != new_state:
+        logger.info(
+          f"[{state_key}] State changed before notify (was {final_state}), cancelling send")
         with _state_lock:
-            entry = flip_history.setdefault(state_key, {
-                "flips": [],
-                "spike_start": None,
-                "spike_notified": False,
-                "early_notified": False
-            })
-            spike_start = entry.get("spike_start")
-            spike_notified = entry.get("spike_notified", False)
+          timers.pop(state_key, None)
+        return
 
-        # If spiking and has lasted SPIKE_ESCALATE_SECONDS -> send SPIKE escalation alert
-        if spike_start and (now_send - spike_start >= SPIKE_ESCALATE_SECONDS) and not spike_notified:
-            parts = _parse_template_key(template_name)
-            metric = _get_metric(parts) or ("PING" if "PING" in template_name.upper() else "CONNECTION")
-            spike_template_key = f"{metric}-SPIKE-{group_name}-DOWN".upper()
-            logger.info(f"[{state_key}] Spiking persisted >= {SPIKE_ESCALATE_SECONDS}s → sending SPIKE alert ({spike_template_key})")
-            db = SessionLocal()
-            try:
-                notify_clients(db, spike_template_key, connection_name, group_name)
-                with _state_lock:
-                    entry["spike_notified"] = True
-                # Do not proceed with normal same-state notification after spike alert
-            finally:
-                db.close()
-            with _state_lock:
-                timers.pop(state_key, None)
-            return
+      now_send = time.time()
 
-        # Debounce repeated notifications for same stable state
-        with _state_lock:
-            prev_notified = notified_state.get(state_key)
-            last_sent_time = cooldown_state.get(state_key, 0)
+      # Re-check spike escalation conditions
+      with _state_lock:
+        entry_local = flip_history.setdefault(state_key, {
+          "flips": [],
+          "spike_start": None,
+          "spike_notified": False,
+          "early_notified": False,
+        })
+        spike_start = entry_local.get("spike_start")
+        spike_notified = entry_local.get("spike_notified", False)
 
-        if prev_notified == new_state:
-            logger.info(f"[{state_key}] {new_state} already notified, skipping")
-            with _state_lock:
-                timers.pop(state_key, None)
-            return
-
-        if time.time() - last_sent_time < COOLDOWN:
-            logger.info(f"[{state_key}] Skipping duplicate within cooldown window ({COOLDOWN}s)")
-            with _state_lock:
-                timers.pop(state_key, None)
-            return
-
-        # Normal send
-        logger.info(f"[{state_key}] Stable {new_state} after {flap_count} flaps → sending {template_name}")
+      # If spiking persisted long enough, send SPIKE escalation (once)
+      if spike_start and (
+          now_send - spike_start >= SPIKE_ESCALATE_SECONDS) and not spike_notified:
+        parts = _parse_template_key(template_name)
+        metric = _get_metric(parts) or (
+          "PING" if "PING" in template_name.upper() else "CONNECTION")
+        spike_template_key = f"{metric}-SPIKE-{group_name}-DOWN".upper()
+        logger.info(
+          f"[{state_key}] Spiking persisted >= {SPIKE_ESCALATE_SECONDS}s → sending SPIKE alert ({spike_template_key})")
         db = SessionLocal()
         try:
-            notify_clients(db, template_name, connection_name, group_name)
-            with _state_lock:
-                notified_state[state_key] = new_state
-                cooldown_state[state_key] = time.time()
-                # clear spike tracking if stabilized
-                if entry.get("spike_start"):
-                    logger.info(f"[{state_key}] Clearing spike history (stabilized).")
-                    entry["flips"] = []
-                    entry["spike_start"] = None
-                    entry["spike_notified"] = False
-                    entry["early_notified"] = False
+          notify_clients(db, spike_template_key, connection_name, group_name)
+          with _state_lock:
+            entry_local["spike_notified"] = True
         finally:
-            db.close()
-
+          db.close()
         with _state_lock:
-            timers.pop(state_key, None)
+          timers.pop(state_key, None)
+        return
+
+      # Debounce: skip if we've already notified this state recently
+      with _state_lock:
+        prev_notified = notified_state.get(state_key)
+        last_sent_time = cooldown_state.get(state_key, 0)
+
+      if prev_notified == new_state:
+        logger.info(
+          f"[{state_key}] {new_state} already notified previously, skipping")
+        with _state_lock:
+          timers.pop(state_key, None)
+        return
+
+      if now_send - last_sent_time < COOLDOWN:
+        logger.info(
+          f"[{state_key}] Within cooldown ({COOLDOWN}s), skipping normal notify")
+        with _state_lock:
+          timers.pop(state_key, None)
+        return
+
+      # Normal notification send
+      logger.info(f"[{state_key}] Stable {new_state} → sending {template_name}")
+      db = SessionLocal()
+      try:
+        notify_clients(db, template_name, connection_name, group_name)
+        with _state_lock:
+          notified_state[state_key] = new_state
+          cooldown_state[state_key] = time.time()
+          # clear spike tracking now that state has stabilized
+          entry_local["flips"] = []
+          entry_local["spike_start"] = None
+          entry_local["spike_notified"] = False
+          entry_local["early_notified"] = False
+      finally:
+        db.close()
+
+      with _state_lock:
+        timers.pop(state_key, None)
 
     t = threading.Thread(target=_task, daemon=True)
     with _state_lock:
-        timers[state_key] = t
+      timers[state_key] = t
     t.start()
+
 
 # ============================================================
 # WebSocket broadcast helper
