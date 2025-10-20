@@ -44,6 +44,19 @@ notified_state = {}   # Last state actually notified
 timers = {}
 DELAY = 90  # seconds before sending notification
 
+# ============================================================
+# Spike tracking (flip history, spiking windows)
+# - flip_history keeps per-key timestamps of flips
+# - spike_start indicates when spiking began
+# - spike_notified prevents repeated spike alerts
+# ============================================================
+# stored on schedule_notify function object via attributes
+# schedule_notify._flip_history: dict[state_key] -> {"flips": [timestamps], "spike_start": float|None, "spike_notified": bool}
+# parameters for detection:
+SPIKE_FLAP_WINDOW = 5 * 60      # 5 minutes window to count flaps
+SPIKE_FLAP_THRESHOLD = 3        # >=3 flips inside window => considered spiking
+SPIKE_ESCALATE_SECONDS = 10 * 60  # 10 minutes of spiking before admin "spiking" alert
+
 
 # ============================================================
 # Message composition helpers and maps
@@ -113,6 +126,7 @@ def _compose_message(template_name: str, client_conn_name: str | None,
   """
   Compose message text according to your specification.
   Admin messages get a location suffix (MALUNGON / SURALLAH) based on group token in template_name.
+  This function still acts as a fallback for SPIKE templates if a DB template isn't present.
   """
   parts = _parse_template_key(template_name)
   is_spike = _is_spike(parts)
@@ -142,21 +156,21 @@ def _compose_message(template_name: str, client_conn_name: str | None,
     elif metric == "VENDO":
       cn = client_conn_name or "VENDO"
       if event == "UP":
-        base = f"VENDO {cn} is now up and running smoothly."
+        base = f"✅ VENDO {cn} is now up and running smoothly."
       else:
-        base = f"VENDO {cn} is currently down. Please check cable and indicator light."
+        base = f"⚠️ VENDO {cn} is currently down. Please check cable and indicator light."
     elif metric == "PRIVATE":
       if client_is_admin:
         cn = client_conn_name or "PRIVATE"
         if event == "UP":
-          base = f"{cn} is now up and running smoothly."
+          base = f"✅ {cn} is now up and running smoothly."
         else:
-          base = f"{cn} is currently down. Please check the cable and plug."
+          base = f"⚠️ {cn} is currently down. Please check the cable and plug."
       else:
         if event == "UP":
-          base = "Your connection is now up and running smoothly."
+          base = "✅ Your connection is now up and running smoothly."
         else:
-          base = "Your connection is currently down. Please check the cable and plug."
+          base = "⚠️ Your connection is currently down. Please check the cable and plug."
     else:
       # generic fallback
       if event == "UP":
@@ -164,7 +178,7 @@ def _compose_message(template_name: str, client_conn_name: str | None,
       else:
         base = "⚠️ Service is currently down. Please wait for restoration."
 
-  # SPIKE messages
+  # SPIKE messages (fallback)
   else:
     if metric in ("CONNECTION", "PING") and service_label:
       if event == "UP":
@@ -173,22 +187,23 @@ def _compose_message(template_name: str, client_conn_name: str | None,
         base = f"⚠️ {service_label} is slow and unstable or experiencing latency."
     elif metric == "VENDO":
       cn = client_conn_name or "VENDO"
+      # for quick fallback: non-admin vs admin wording handled elsewhere (notify_clients)
       if event == "UP":
-        base = f"VENDO {cn} is now stable."
+        base = f"✅ VENDO {cn} is now stable."
       else:
-        base = f"VENDO {cn} is currently unstable. Please check cable and indicator light."
+        base = f"⚠️ VENDO {cn} is currently unstable. Please check cable and indicator light."
     elif metric == "PRIVATE":
+      cn = client_conn_name or "PRIVATE"
       if client_is_admin:
-        cn = client_conn_name or "PRIVATE"
         if event == "UP":
-          base = f"{cn} is now stable."
+          base = f"✅ {cn} is now stable."
         else:
-          base = f"{cn} is currently unstable. Please check the cable and plug."
+          base = f"⚠️ {cn} is currently unstable. Please check the cable and plug."
       else:
         if event == "UP":
-          base = "Your connection is now stable."
+          base = "✅ Your connection is now stable."
         else:
-          base = "Your connection is currently unstable. Please check the cable and plug."
+          base = "⚠️ Your connection is currently unstable. Please check the cable and plug."
     else:
       if event == "UP":
         base = "✅ Service is now stable and running smoothly again."
@@ -206,212 +221,366 @@ def _compose_message(template_name: str, client_conn_name: str | None,
 # Notification helpers (merged, full-featured)
 # ============================================================
 def notify_clients(db: Session, template_name: str, connection_name: str = None,
-                   group_name: str = None):
-    """
-    Unified notify function that:
-      - parses template_name to detect NORMAL vs SPIKE and VENDO / PRIVATE / ISP
-      - auto-creates Template DB entries for VENDO/PRIVATE when missing
-      - routes messages:
-          * ISP: send non-admin wording to all non-admin clients in the group_name
-                 send admin wording (with location suffix) only to admin clients in the group_name
-          * VENDO/PRIVATE: only send to clients mapped to VENDO/PRIVATE (client.connection_name must contain token or match)
-                 admins may also receive based on admin detection (same as above)
-    """
-    if not template_name:
-        logger.warning("notify_clients() called without template_name")
-        return
+    group_name: str | None = None):
+  """
+  Unified notify function that:
+    - Parses template_name to detect NORMAL vs SPIKE and VENDO / PRIVATE / ISP
+    - Auto-creates Template DB entries when missing (fallback content)
+    - Routes messages:
+        * ISP: send non-admin wording to non-admin clients, admin wording to admins
+        * VENDO/PRIVATE: send to mapped clients + admins in same group (admin gets name-based message)
+    - When SPIKE token is present, uses the spiking grammar you're asked for.
+  """
+  if not template_name:
+    logger.warning("notify_clients() called without template_name")
+    return
 
-    # Normalize template key
-    template_key = template_name.replace("_", "-").upper()
-    parts = _parse_template_key(template_key)
-    metric = _get_metric(parts)
-    is_spike = _is_spike(parts)
+  template_key = template_name.replace("_", "-").upper()
+  parts = _parse_template_key(template_key)
+  metric = _get_metric(parts)
+  is_spike = _is_spike(parts)
+  event = _get_event(parts)
 
-    # Ensure template row exists for VENDO/PRIVATE (auto-create) OR for any template so logs have template_id
-    template = db.query(models.Template).filter(models.Template.title == template_key).first()
-    if not template:
-        # create default content using non-admin composition (so DB has some meaningful content)
-        content_default = _compose_message(template_key, connection_name or "", False)
-        template = models.Template(title=template_key, content=content_default)
-        db.add(template)
-        db.commit()
-        db.refresh(template)
-        logger.info(f"Template '{template_key}' created with default content.")
+  # Ensure template row exists (so logs have a template_id). Use fallback content if missing.
+  template = db.query(models.Template).filter(
+    models.Template.title == template_key).first()
+  if not template:
+    content_default = _compose_message(template_key, connection_name or "",
+                                       False)
+    template = models.Template(title=template_key, content=content_default)
+    db.add(template)
+    db.commit()
+    db.refresh(template)
+    logger.info(f"🆕 Template '{template_key}' created with default content.")
 
-    # ---------------------
-    # ISP handling
-    # ---------------------
-    if metric in ("CONNECTION", "PING") or any(p.startswith("ISP") for p in parts):
-        # For ISP-type events, per your spec:
-        # - send to all non-admin clients (within the same group_name) using non-admin wording
-        # - send to admin clients (within the same group_name) using admin wording (with suffix)
-        from sqlalchemy import and_
+  # ============================================================
+  # 🛰 ISP (PING / CONNECTION / ISPx)
+  # ============================================================
+  if metric in ("CONNECTION", "PING") or any(
+      p.startswith("ISP") for p in parts):
+    from sqlalchemy import and_
 
-        # Build base query limited to group_name if provided
-        base_query = db.query(models.Client)
-        if group_name:
-            base_query = base_query.filter(models.Client.group_name == group_name)
-
-        # Non-admin clients: connection_name DOES NOT contain 'ADMIN'
-        non_admin_clients = base_query.filter(~models.Client.connection_name.ilike("%ADMIN%")).all()
-
-        for client in non_admin_clients:
-            client_conn = client.connection_name or ""
-            message_text = _compose_message(template_key, client_conn, False)
-            try:
-                resp = send_message(client.messenger_id, message_text)
-                status = resp.get("message_id", "failed")
-            except Exception:
-                status = "failed"
-            log = models.MessageLog(client_id=client.id, template_id=template.id, status=status)
-            db.add(log)
-            db.commit()
-            logger.info(f"📩 Notified NON-ADMIN {client.name} ({client.connection_name}) with '{template_key}'")
-
-        # Admin clients: connection_name contains 'ADMIN' (only they receive admin-suffixed text)
-        admin_clients = base_query.filter(models.Client.connection_name.ilike("%ADMIN%")).all()
-        for client in admin_clients:
-            client_conn = client.connection_name or ""
-            message_text = _compose_message(template_key, client_conn, True)
-            try:
-                resp = send_message(client.messenger_id, message_text)
-                status = resp.get("message_id", "failed")
-            except Exception:
-                status = "failed"
-            log = models.MessageLog(client_id=client.id, template_id=template.id, status=status)
-            db.add(log)
-            db.commit()
-            logger.info(f"📩 Notified ADMIN {client.name} ({client.connection_name}) with '{template_key}'")
-
-        return
-
-    # ---------------------
-    # VENDO / PRIVATE handling
-    # ---------------------
-    # For VENDO and PRIVATE we only send to clients mapped in DB via connection_name containing token or matching
-    token = None
-    if metric == "VENDO":
-        token = "VENDO"
-    elif metric == "PRIVATE":
-        token = "PRIVATE"
-
-    if token:
-        # If a specific connection_name is provided in the Netwatch rule, prefer that for matching.
-        # Otherwise, match any client with connection_name containing VENDO / PRIVATE.
-        from sqlalchemy import or_
-
-        base_query = db.query(models.Client)
-        if group_name:
-            base_query = base_query.filter(models.Client.group_name == group_name)
-
-        if connection_name:
-            # match clients where client.connection_name equals or contains the given connection_name
-            candidates = base_query.filter(
-                or_(
-                    models.Client.connection_name == connection_name,
-                    models.Client.connection_name.ilike(f"{connection_name}%"),
-                    models.Client.connection_name.ilike(f"%{connection_name}%"),
-                )
-            ).all()
-        else:
-            # fallback: any client whose connection_name contains the token (VENDO / PRIVATE)
-            candidates = base_query.filter(models.Client.connection_name.ilike(f"%{token}%")).all()
-
-        if not candidates:
-            logger.info(f"No mapped clients found for token={token} connection_name={connection_name}")
-            return
-
-        # Send messages to mapped clients
-        for client in candidates:
-            client_conn = client.connection_name or ""
-            client_is_admin = "ADMIN" in client_conn.upper()
-            message_text = _compose_message(template_key, client_conn, client_is_admin)
-            try:
-                resp = send_message(client.messenger_id, message_text)
-                status = resp.get("message_id", "failed")
-            except Exception:
-                status = "failed"
-            log = models.MessageLog(client_id=client.id, template_id=template.id, status=status)
-            db.add(log)
-            db.commit()
-            logger.info(f"📩 Notified {'ADMIN' if client_is_admin else 'NON-ADMIN'} {client.name} ({client.connection_name}) with '{template_key}'")
-
-        return
-
-    # ---------------------
-    # Fallback: generic template send to matching clients (preserve old behavior)
-    # ---------------------
-    query = db.query(models.Client)
-    if connection_name:
-        from sqlalchemy import or_
-        query = query.filter(
-            or_(
-                models.Client.connection_name == connection_name,
-                models.Client.connection_name.ilike(f"{connection_name}%"),
-                models.Client.connection_name.ilike(f"%{connection_name}%"),
-            )
-        )
+    base_query = db.query(models.Client)
     if group_name:
-        query = query.filter(models.Client.group_name == group_name)
+      base_query = base_query.filter(models.Client.group_name == group_name)
 
-    clients = query.all()
-    for client in clients:
-        client_conn = client.connection_name or ""
-        client_is_admin = "ADMIN" in client_conn.upper()
+    # Non-admin
+    non_admins = base_query.filter(
+      ~models.Client.connection_name.ilike("%ADMIN%")).all()
+    for client in non_admins:
+      msg = _compose_message(template_key, client.connection_name, False)
+      try:
+        resp = send_message(client.messenger_id, msg)
+        status = resp.get("message_id", "failed")
+      except Exception:
+        status = "failed"
+      db.add(models.MessageLog(client_id=client.id, template_id=template.id,
+                               status=status))
+      db.commit()
+      logger.info(
+        f"📩 Notified NON-ADMIN {client.name} ({client.connection_name}) with '{template_key}'")
+
+    # Admin
+    admins = base_query.filter(
+      models.Client.connection_name.ilike("%ADMIN%")).all()
+    for client in admins:
+      msg = _compose_message(template_key, client.connection_name, True)
+      try:
+        resp = send_message(client.messenger_id, msg)
+        status = resp.get("message_id", "failed")
+      except Exception:
+        status = "failed"
+      db.add(models.MessageLog(client_id=client.id, template_id=template.id,
+                               status=status))
+      db.commit()
+      logger.info(
+        f"📩 Notified ADMIN {client.name} ({client.connection_name}) with '{template_key}'")
+
+    return
+
+  # ============================================================
+  # 🧾 VENDO / PRIVATE
+  # ============================================================
+  if metric in ("VENDO", "PRIVATE"):
+    from sqlalchemy import or_
+
+    base_query = db.query(models.Client)
+    if group_name:
+      base_query = base_query.filter(models.Client.group_name == group_name)
+
+    # Find mapped clients for the connection
+    if connection_name:
+      candidates = base_query.filter(
+        or_(
+          models.Client.connection_name == connection_name,
+          models.Client.connection_name.ilike(f"{connection_name}%"),
+          models.Client.connection_name.ilike(f"%{connection_name}%"),
+        )
+      ).all()
+    else:
+      candidates = base_query.filter(
+        models.Client.connection_name.ilike(f"%{metric}%")).all()
+
+    if not candidates:
+      logger.info(f"No mapped clients found for {metric} ({connection_name})")
+      return
+
+    # Notify mapped clients (non-admin/admin content handled)
+    for client in candidates:
+      client_conn = client.connection_name or ""
+      client_is_admin = "ADMIN" in client_conn.upper()
+
+      # If it's a spiking event: override messages with the requested wording
+      if is_spike:
+        if client_is_admin:
+          # Admins: short spiking alert (they asked for {connection} ... healthy/kindly visit)
+          cn = connection_name or client_conn or metric
+          admin_msg = f"{cn} has been spiking for 10 minutes. Please check the site and visit to verify."
+          message_text = admin_msg
+        else:
+          # Non-admin: send unstable instructions (private/vendo differ slightly)
+          if metric == "PRIVATE":
+            message_text = (
+              "⚠️ Your connection is unstable. Kindly check the cables and indicator lights. "
+              "The black device should show 5 lights and the white device should not have a red light. "
+              "Please report to the administrator if the issue persists or if no action is taken within a day."
+            )
+          else:  # VENDO
+            message_text = (
+              "⚠️ Vendo is unstable. Kindly check the cables and indicator light. "
+              "The black device should show 5 lights. "
+              "Please report to the administrator if the issue persists or if no action is taken within a day."
+            )
+      else:
+        # Non-spike -> use the normal composition fallback
         message_text = _compose_message(template_key, client_conn, client_is_admin)
-        try:
-            resp = send_message(client.messenger_id, message_text)
-            status = resp.get("message_id", "failed")
-        except Exception:
-            status = "failed"
-        log = models.MessageLog(client_id=client.id, template_id=template.id, status=status)
-        db.add(log)
-        db.commit()
-        logger.info(f"📩 Notified {client.name} ({client.connection_name}) with '{template_key}'")
+
+      try:
+        resp = send_message(client.messenger_id, message_text)
+        status = resp.get("message_id", "failed")
+      except Exception:
+        status = "failed"
+
+      db.add(models.MessageLog(client_id=client.id, template_id=template.id,
+                               status=status))
+      db.commit()
+      logger.info(
+        f"📩 Notified {'ADMIN' if client_is_admin else 'NON-ADMIN'} {client.name} ({client.connection_name}) with '{template_key}'")
+
+    # ----------------------------------------------------------
+    # 📢 NEW: Also notify all admins in the same group (private/admin must always be notified)
+    # If spiking: use spiking admin grammar. Otherwise use up/down messages.
+    # ----------------------------------------------------------
+    admin_clients = db.query(models.Client).filter(
+      models.Client.group_name == group_name,
+      models.Client.connection_name.ilike("%ADMIN%")
+    ).all()
+
+    cn = connection_name or metric
+    for admin in admin_clients:
+      if is_spike:
+        # Spiking admin message (requested grammar)
+        msg = f"{cn} has been spiking for 10 minutes. Please check the site and visit to verify."
+      else:
+        # Non-spike admin wording - keep previous behavior but improved grammar
+        if metric == "VENDO":
+          prefix = "🏧 [VENDO Alert]"
+        else:
+          prefix = "🔒 [PRIVATE Alert]"
+
+        if event == "UP":
+          msg = f"{prefix} {cn} is now up and running smoothly."
+        else:
+          msg = f"{prefix} {cn} is currently down. Please check the cable and plug."
+
+      try:
+        resp = send_message(admin.messenger_id, msg)
+        status = resp.get("message_id", "failed")
+      except Exception:
+        status = "failed"
+
+      db.add(models.MessageLog(client_id=admin.id, template_id=template.id,
+                               status=status))
+      db.commit()
+      logger.info(
+        f"📩 [ADMIN NOTICE] {admin.name} ({admin.connection_name}) received '{template_key}' for {cn}")
+
+    return
+
+  # ============================================================
+  # 🧩 Fallback (generic send)
+  # ============================================================
+  query = db.query(models.Client)
+  if connection_name:
+    from sqlalchemy import or_
+    query = query.filter(
+      or_(
+        models.Client.connection_name == connection_name,
+        models.Client.connection_name.ilike(f"{connection_name}%"),
+        models.Client.connection_name.ilike(f"%{connection_name}%"),
+      )
+    )
+  if group_name:
+    query = query.filter(models.Client.group_name == group_name)
+
+  for client in query.all():
+    msg = _compose_message(template_key, client.connection_name,
+                           "ADMIN" in (client.connection_name or "").upper())
+    try:
+      resp = send_message(client.messenger_id, msg)
+      status = resp.get("message_id", "failed")
+    except Exception:
+      status = "failed"
+    db.add(models.MessageLog(client_id=client.id, template_id=template.id,
+                             status=status))
+    db.commit()
+    logger.info(
+      f"📩 Notified {client.name} ({client.connection_name}) with '{template_key}'")
 
 
 def schedule_notify(state_key: str, template_name: str, connection_name: str,
     group_name: str, new_state: str):
-  """Wait for stability (≤DELAYs) but tolerate brief flaps; send once stable."""
+  """
+  Waits for a stability period (≤DELAYs) before sending a notification.
+  Debounces duplicate threads and applies cooldown to avoid notification spam.
+
+  Additionally:
+    - Tracks flip history to detect spiking.
+    - If flips >= SPIKE_FLAP_THRESHOLD inside SPIKE_FLAP_WINDOW, start spiking timer.
+    - If spiking lasts SPIKE_ESCALATE_SECONDS, send spiking alerts (special wording).
+  """
+  # setup persistent flip history storage on function object
+  flip_history = getattr(schedule_notify, "_flip_history", {})
+  setattr(schedule_notify, "_flip_history", flip_history)
+  COOLDOWN = 120  # seconds between notifications for same state
+  cooldown_state = getattr(schedule_notify, "_cooldown_state", {})
+  setattr(schedule_notify, "_cooldown_state", cooldown_state)
+
+  # Avoid duplicate concurrent threads for same state_key
+  if timers.get(state_key) and timers[state_key].is_alive():
+    logger.info(
+      f"[{state_key}] Notification already scheduled, skipping duplicate.")
+    return
+
+  # Update flip history for spike detection immediately
+  now = time.time()
+  entry = flip_history.setdefault(state_key, {"flips": [], "spike_start": None, "spike_notified": False})
+  # Append this flip timestamp
+  entry["flips"].append(now)
+  # prune flips older than SPIKE_FLAP_WINDOW
+  cutoff = now - SPIKE_FLAP_WINDOW
+  entry["flips"] = [t for t in entry["flips"] if t >= cutoff]
+
+  # Determine if flipping indicates spiking
+  if len(entry["flips"]) >= SPIKE_FLAP_THRESHOLD:
+    if entry["spike_start"] is None:
+      entry["spike_start"] = entry["flips"][0]  # earliest flip within window
+      logger.info(f"[{state_key}] Spiking detected, spike_start set to {entry['spike_start']}")
+  else:
+    # not enough flips to consider spiking; keep spike_start as-is (do not clear immediately)
+    pass
 
   def task():
     start = time.time()
     stable_start = start
+    flap_count = 0
     logger.info(
       f"[{state_key}] Waiting {DELAY}s stability window for {new_state}")
 
+    # Wait for stable state window (DELAY) but keep monitoring flips for spiking
     while time.time() - start < DELAY:
       current = last_state.get(state_key)
       if current != new_state:
-        # reset stability window if flapped
+        flap_count += 1
         stable_start = time.time()
+        # also update flip history (in case flips occur while waiting)
+        now_inner = time.time()
+        entry["flips"].append(now_inner)
+        cutoff_inner = now_inner - SPIKE_FLAP_WINDOW
+        entry["flips"] = [t for t in entry["flips"] if t >= cutoff_inner]
+        if len(entry["flips"]) >= SPIKE_FLAP_THRESHOLD and entry["spike_start"] is None:
+          entry["spike_start"] = entry["flips"][0]
+          logger.info(f"[{state_key}] Spiking detected (during wait), spike_start set to {entry['spike_start']}")
         logger.info(
           f"[{state_key}] Flap detected ({current} != {new_state}), resetting timer")
-      # exit early if stable long enough (≥60 s continuous)
-      if time.time() - stable_start >= 60:
+      if time.time() - stable_start >= 60:  # stable for at least 60s
         break
-      time.sleep(10)
+      time.sleep(5)
 
-    # confirm final state still matches before sending
-    if last_state.get(state_key) == new_state:
-      prev_notified = notified_state.get(state_key)
-      if prev_notified != new_state:
-        logger.info(
-          f"[{state_key}] Stable {new_state} → sending {template_name}")
-        db = SessionLocal()
-        try:
-          notify_clients(db, template_name, connection_name, group_name)
-          notified_state[state_key] = new_state
-        finally:
-          db.close()
-      else:
-        logger.info(f"[{state_key}] {new_state} already notified, skipping")
-    else:
+    # Confirm final stable state
+    final_state = last_state.get(state_key)
+    if final_state != new_state:
       logger.info(
         f"[{state_key}] State changed again before sending, cancelled")
+      timers.pop(state_key, None)
+      return
 
-  if timers.get(state_key) and timers[state_key].is_alive():
-    logger.info(f"[{state_key}] Cancelling old timer")
+    # If currently spiking (spike_start exists and not yet escalated)
+    spike_start = entry.get("spike_start")
+    spike_notified = entry.get("spike_notified", False)
+    now_send = time.time()
+
+    # If spiking and has lasted SPIKE_ESCALATE_SECONDS, send spiking alert (special messages)
+    if spike_start and (now_send - spike_start >= SPIKE_ESCALATE_SECONDS) and not spike_notified:
+      # Build a template key that includes SPIKE token and metric if possible to allow _compose_message fallback.
+      parts = _parse_template_key(template_name)
+      metric = _get_metric(parts) or ("PRIVATE" if "PRIVATE" in (connection_name or "").upper() else ("VENDO" if "VENDO" in (connection_name or "").upper() else None))
+      spike_template_key = None
+      if metric:
+        # include metric so notify_clients can detect it
+        spike_template_key = f"{metric}-SPIKE-{group_name}-DOWN".upper()
+      else:
+        spike_template_key = f"{connection_name}-{group_name}-SPIKE".upper()
+
+      logger.info(f"[{state_key}] Spiking persisted >= {SPIKE_ESCALATE_SECONDS}s → sending SPIKE alert ({spike_template_key})")
+      db = SessionLocal()
+      try:
+        notify_clients(db, spike_template_key, connection_name, group_name)
+        # mark spike notified to avoid repeating
+        entry["spike_notified"] = True
+      finally:
+        db.close()
+
+      # Do not proceed with normal same-state notification after spike alert here
+      timers.pop(state_key, None)
+      return
+
+    # Debounce repeated notifications for same stable state
+    prev_notified = notified_state.get(state_key)
+    if prev_notified == new_state:
+      logger.info(f"[{state_key}] {new_state} already notified, skipping")
+      timers.pop(state_key, None)
+      return
+
+    # Cooldown check
+    last_sent_time = cooldown_state.get(state_key, 0)
+    if time.time() - last_sent_time < COOLDOWN:
+      logger.info(
+        f"[{state_key}] Skipping duplicate within cooldown window ({COOLDOWN}s)")
+      timers.pop(state_key, None)
+      return
+
+    # Normal send (not spiking)
+    logger.info(
+      f"[{state_key}] Stable {new_state} after {flap_count} flaps → sending {template_name}")
+    db = SessionLocal()
+    try:
+      notify_clients(db, template_name, connection_name, group_name)
+      notified_state[state_key] = new_state
+      cooldown_state[state_key] = time.time()
+      # If stable and spiking had been flagged earlier, clear spike tracking
+      if entry.get("spike_start"):
+        logger.info(f"[{state_key}] Clearing spike history (stabilized).")
+        entry["flips"] = []
+        entry["spike_start"] = None
+        entry["spike_notified"] = False
+    finally:
+      db.close()
+
+    # Cleanup timer record
+    timers.pop(state_key, None)
+
+  # Create and start single notify thread
   t = threading.Thread(target=task, daemon=True)
   timers[state_key] = t
   t.start()
@@ -466,7 +635,7 @@ def process_rule(db: Session, client: models.Client, connection_name: str,
           template_name = f"{connection_name}-{group_name}-{last_state_value}".replace(
             "_", "-").upper()
 
-          # Schedule delayed notification (debounced)
+          # Schedule delayed notification (debounced & spike aware)
           schedule_notify(key, template_name, connection_name, group_name,
                           last_state_value)
 

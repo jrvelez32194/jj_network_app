@@ -114,7 +114,7 @@ ISP-PING-G2-SPIKE-UP - ✅ PLDT Provider is now stable and running smoothly agai
 ISP-PING-G2-SPIKE-DOWN -  ⚠️ PLDT Provider is slow and unstable or experiencing latency. - SURALLAH
 
 
-For Vendo and private - this will autocreate if not exist, only send if the client is mapped in vendo or private via connection_name
+For Vendo and private - this will autocreate if not exist, only send if the client is mapped in vendo or private via connection_name, admin can receive this as well by group_name
 
 connection_name
 VENDO
