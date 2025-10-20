@@ -42,7 +42,7 @@ JJ Internet Service
 """
 
 DUE_NOTICE_TEMPLATE = """\
-Good day!
+Good day {client_display}!
 
 This is a friendly reminder that your internet account payment is due on {due_date}, amounting to {amount:,.2f} pesos only.
 
@@ -73,7 +73,7 @@ ADMIN_THROTTLE_NOTICE = """\
 Client has reached 4 days of unpaid balance.
 Throttle will be applied within 1 hour if payment is not confirmed.
 
-Client: {client_name}
+Client: {client_display}
 Group: {group_name}
 Due Date: {due_date}
 Amount: {amount:,.2f} pesos
@@ -85,7 +85,7 @@ ADMIN_DISCONNECTION_NOTICE = """\
 Client account is now 7 days overdue.
 Disconnection will occur within 1 hour if payment is still not made.
 
-Client: {client_name}
+Client: {client_display}
 Group: {group_name}
 Due Date: {due_date}
 Amount: {amount:,.2f} pesos
@@ -94,7 +94,7 @@ Amount: {amount:,.2f} pesos
 ADMIN_DUE_REMINDER = """\
 📢 ADMIN REMINDER: CLIENT BILLING NOTICE SENT
 
-Client: {client_name}
+Client: {client_display}
 Group: {group_name}
 Due Date: {due_date}
 Amount: {amount:,.2f} pesos

@@ -614,54 +614,68 @@ def broadcast_state_change(ws_manager, client: models.Client,
 # ============================================================
 # Core processing
 # ============================================================
-def process_rule(db: Session, client: models.Client, connection_name: str,
-    last_state_value: str, group_name: str, ws_manager=None):
-      """
-      Handles state change detection, DB update, notifications, and broadcasting.
-      Fix: Template name now includes group suffix (e.g., ISP1-CONNECTION-G1-UP)
-      """
-      key = f"{connection_name}_{group_name}"
+def process_rule(
+    db: Session,
+    client: models.Client,
+    connection_name: str,
+    last_state_value: str,
+    group_name: str,
+    ws_manager=None,
+    is_primary: bool = True,  # ✅ New param — only primary triggers notify
+):
+    """
+    Handles state change detection, DB update, notifications, and broadcasting.
+    Fix: Template name now includes group suffix (e.g., ISP1-CONNECTION-G1-UP)
+    """
+    key = f"{connection_name}_{group_name}"
 
-      if client:
-        if client.state != last_state_value:
-          logger.info(
-            f"🔄 {client.name} ({connection_name}) {client.state} → {last_state_value}")
-
-          # Broadcast to frontend clients (WebSocket)
-          broadcast_state_change(ws_manager, client, connection_name,
-                                 last_state_value)
-
-          # ✅ Include group name in template_name for distinct per-site templates
-          template_name = f"{connection_name}-{group_name}-{last_state_value}".replace(
-            "_", "-").upper()
-
-          # Skip if same as last observed and already notified
-          prev_state = last_state.get(key)
-          prev_notified = notified_state.get(key)
-
-          if prev_state == last_state_value and prev_notified == last_state_value:
-            logger.info(
-              f"[{key}] State remains {last_state_value}, already notified → skip")
-            return
-
-          # Schedule delayed notification (debounced & spike aware)
-          schedule_notify(key, template_name, connection_name, group_name,
-                          last_state_value)
-
-          # Update DB client state
-          client.state = last_state_value
-          db.add(client)
-      else:
-        # For unknown connections not mapped in DB
-        broadcast_state_change(
-          ws_manager,
-          models.Client(id=0, messenger_id=None, name="Unknown"),
-          connection_name,
-          last_state_value,
+    if client:
+      if client.state != last_state_value:
+        logger.info(
+          f"🔄 {client.name} ({connection_name}) {client.state} → {last_state_value}"
         )
 
-      # Track the latest observed state
-      last_state[key] = last_state_value
+        # Broadcast to frontend clients (WebSocket)
+        broadcast_state_change(ws_manager, client, connection_name,
+                               last_state_value)
+
+        # ✅ Include group name in template_name for distinct per-site templates
+        template_name = (
+          f"{connection_name}-{group_name}-{last_state_value}"
+          .replace("_", "-")
+          .upper()
+        )
+
+        # Skip if same as last observed and already notified
+        prev_state = last_state.get(key)
+        prev_notified = notified_state.get(key)
+
+        if prev_state == last_state_value and prev_notified == last_state_value:
+          logger.info(
+            f"[{key}] State remains {last_state_value}, already notified → skip"
+          )
+          return
+
+        # ✅ Only the first client per connection (is_primary) triggers notify
+        if is_primary:
+          schedule_notify(
+            key, template_name, connection_name, group_name, last_state_value
+          )
+
+        # Update DB client state
+        client.state = last_state_value
+        db.add(client)
+    else:
+      # For unknown connections not mapped in DB
+      broadcast_state_change(
+        ws_manager,
+        models.Client(id=0, messenger_id=None, name="Unknown"),
+        connection_name,
+        last_state_value,
+      )
+
+    # Track the latest observed state
+    last_state[key] = last_state_value
 
 # ============================================================
 # Polling logic
@@ -672,108 +686,143 @@ def poll_netwatch(
     password: str,
     interval: int = 30,
     ws_manager=None,
-    group_name: str = None
+    group_name: str = None,
 ):
-  """Polls MikroTik Netwatch rules every `interval` seconds and updates DB."""
-  from sqlalchemy import or_
-  mikrotik = MikroTikClient(host, username, password)
+    """Polls MikroTik Netwatch rules every `interval` seconds and updates DB."""
+    from sqlalchemy import or_
 
-  while True:
-    if not mikrotik.ensure_connection():
-      logger.warning(f"❌ Cannot connect to {host}, retrying in {interval}s...")
-      time.sleep(interval)
-      continue
+    mikrotik = MikroTikClient(host, username, password)
 
-    rules = mikrotik.get_netwatch()
-    if not rules:
-      logger.warning(f"⚠️ No Netwatch rules found for {host}")
-      time.sleep(interval)
-      continue
+    while True:
+      if not mikrotik.ensure_connection():
+        logger.warning(f"❌ Cannot connect to {host}, retrying in {interval}s...")
+        time.sleep(interval)
+        continue
 
-    db: Session = next(get_db())
-    try:
-      seen_connections = []
+      rules = mikrotik.get_netwatch()
+      if not rules:
+        logger.warning(f"⚠️ No Netwatch rules found for {host}")
+        time.sleep(interval)
+        continue
 
-      for rule in rules:
-        connection_name = rule.get("comment") or rule.get("host")
-        connection_name = connection_name.replace("_", "-") if connection_name else connection_name
-        current_state = (rule.get("status") or "unknown").upper()
-        seen_connections.append(connection_name)
+      db: Session = next(get_db())
+      try:
+        seen_connections = []
 
-        # ✅ Skip transient UNKNOWNs — don't overwrite known UP/DOWN
-        key = f"{connection_name}_{group_name}"
-        prev_state = last_state.get(key)
-        if current_state == "UNKNOWN":
-          logger.debug(f"[{key}] Ignoring transient UNKNOWN (keeping {prev_state})")
-          continue
+        for rule in rules:
+          connection_name = rule.get("comment") or rule.get("host")
+          connection_name = (
+            connection_name.replace("_",
+                                    "-") if connection_name else connection_name
+          )
+          current_state = (rule.get("status") or "unknown").upper()
+          seen_connections.append(connection_name)
 
-        # ✅ Debounce confirmation — avoid flickers
-        if prev_state and prev_state != current_state:
-          time.sleep(2)
-          confirm = (rule.get("status") or current_state).upper()
-          if confirm != current_state:
-            logger.debug(f"[{key}] Ignored flicker {current_state} → {confirm}")
+          # ✅ Skip transient UNKNOWNs — don't overwrite known UP/DOWN
+          key = f"{connection_name}_{group_name}"
+          prev_state = last_state.get(key)
+          if current_state == "UNKNOWN":
+            logger.debug(
+              f"[{key}] Ignoring transient UNKNOWN (keeping {prev_state})")
             continue
 
-        # ✅ Proceed as usual
-        client = db.query(models.Client).filter(
-          or_(
-            models.Client.connection_name == connection_name,
-            models.Client.connection_name.ilike(f"{connection_name}%"),
-            models.Client.connection_name.ilike(f"%{connection_name}%"),
+          # ✅ Debounce confirmation — avoid flickers
+          if prev_state and prev_state != current_state:
+            time.sleep(2)
+            confirm = (rule.get("status") or current_state).upper()
+            if confirm != current_state:
+              logger.debug(f"[{key}] Ignored flicker {current_state} → {confirm}")
+              continue
+
+          # ✅ Get *all* clients with the same connection_name
+          clients = (
+            db.query(models.Client)
+            .filter(
+              or_(
+                models.Client.connection_name == connection_name,
+                models.Client.connection_name.ilike(f"{connection_name}%"),
+                models.Client.connection_name.ilike(f"%{connection_name}%"),
+              )
+            )
+            .all()
           )
-        ).first()
 
-        effective_group = getattr(client, "group_name", None) or group_name or "default"
+          if not clients:
+            logger.debug(f"No clients found for connection {connection_name}")
+            continue
 
-        process_rule(db, client, connection_name, current_state, effective_group, ws_manager)
+          # ✅ Process each matching client independently
+          for i, client in enumerate(clients):
+            effective_group = getattr(client, "group_name",
+                                      None) or group_name or "default"
+            is_primary = i == 0  # ✅ only first triggers notifications
+            process_rule(
+              db,
+              client,
+              connection_name,
+              current_state,
+              effective_group,
+              ws_manager,
+              is_primary=is_primary,  # ✅ pass the flag
+            )
+
+          db.commit()
+
+        # ============================================================
+        # ✅ Mark unmatched clients as UNKNOWN (unchanged)
+        # ============================================================
+        all_clients = db.query(models.Client).filter(
+          models.Client.group_name == group_name
+        ).all()
+
+        def is_seen(client_name: str | None, seen_list: list[str | None]) -> bool:
+          if not client_name:
+            return False
+          cname = client_name.lower()
+          for s in seen_list:
+            if not s:
+              continue
+            s_lower = s.lower()
+            if s_lower == cname or s_lower.startswith(cname):
+              return True
+          return False
+
+        for client in all_clients:
+          if not is_seen(client.connection_name, seen_connections):
+            if client.state != "UNKNOWN":
+              logger.info(
+                f"🔄 {client.connection_name} → UNKNOWN (not matched in Netwatch)"
+              )
+              process_rule(
+                db, client, client.connection_name, "UNKNOWN", group_name,
+                ws_manager
+              )
         db.commit()
 
-      # ============================================================
-      # ✅ Mark unmatched clients as UNKNOWN (unchanged)
-      # ============================================================
-      all_clients = db.query(models.Client).filter(
-        models.Client.group_name == group_name
-      ).all()
+        # ============================================================
+        # 🧹 Cleanup stale states (unchanged)
+        # ============================================================
+        active_keys = {f"{c.connection_name}_{group_name}" for c in all_clients}
+        stale_keys = [
+          key for key in list(last_state.keys()) if key not in active_keys
+        ]
+        if stale_keys:
+          for key in stale_keys:
+            timers.pop(key, None)
+            notified_state.pop(key, None)
+            last_state.pop(key, None)
+          logger.info(
+            f"🧹 Cleaned up {len(stale_keys)} stale state entr"
+            f"{'y' if len(stale_keys) == 1 else 'ies'}."
+          )
 
-      def is_seen(client_name: str | None, seen_list: list[str | None]) -> bool:
-        if not client_name:
-          return False
-        cname = client_name.lower()
-        for s in seen_list:
-          if not s:
-            continue
-          s_lower = s.lower()
-          if s_lower == cname or s_lower.startswith(cname):
-            return True
-        return False
+      except Exception as e:
+        db.rollback()
+        logger.error(f"❌ Error updating client states for {host}: {e}")
+      finally:
+        db.close()
 
-      for client in all_clients:
-        if not is_seen(client.connection_name, seen_connections):
-          if client.state != "UNKNOWN":
-            logger.info(f"🔄 {client.connection_name} → UNKNOWN (not matched in Netwatch)")
-            process_rule(db, client, client.connection_name, "UNKNOWN", group_name, ws_manager)
-      db.commit()
-
-      # ============================================================
-      # 🧹 Cleanup stale states (unchanged)
-      # ============================================================
-      active_keys = {f"{c.connection_name}_{group_name}" for c in all_clients}
-      stale_keys = [key for key in list(last_state.keys()) if key not in active_keys]
-      if stale_keys:
-        for key in stale_keys:
-          timers.pop(key, None)
-          notified_state.pop(key, None)
-          last_state.pop(key, None)
-        logger.info(f"🧹 Cleaned up {len(stale_keys)} stale state entr{'y' if len(stale_keys)==1 else 'ies'}.")
-
-    except Exception as e:
-      db.rollback()
-      logger.error(f"❌ Error updating client states for {host}: {e}")
-    finally:
-      db.close()
-
-    time.sleep(interval)
+      time.sleep(interval)
 
 def initialize_state_cache():
     """Load last known client states from DB into memory on startup.

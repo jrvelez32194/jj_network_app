@@ -152,55 +152,24 @@ def sync_clients(db: Session = Depends(get_db)):
     return {"message": f"✅ Synced {synced} new client(s) from Facebook"}
 
 
-# 🚀 Single Set Paid
+# 🚀 Single Set Paid (now updates all shared connections)
 @router.post("/{client_id}/set_paid", response_model=dict)
 async def set_paid(client_id: int, db: Session = Depends(get_db)):
-    client = db.query(models.Client).filter(models.Client.id == client_id).first()
-    if not client:
+    main_client = db.query(models.Client).filter(models.Client.id == client_id).first()
+    if not main_client:
         raise HTTPException(status_code=404, detail="Client not found")
 
-    # 🧩 Save the old status before updating
-    prev_status = client.status
-    # Update to PAID
-    client.status = BillingStatus.PAID
-    handle_paid_client(db, client)
+    # 🧩 Find all clients sharing the same connection name
+    shared_clients = db.query(models.Client).filter(
+        models.Client.connection_name == main_client.connection_name
+    ).all()
 
-    # 🧩 Send message if connected to Messenger
-    if client.messenger_id:
-        if prev_status in [BillingStatus.LIMITED, BillingStatus.CUTOFF]:
-            msg = (
-                f"Hi {client.name}, we received your payment of {client.amt_monthly}.\n"
-                "Your connection will be fully restored shortly. ✅ Thank you!"
-            )
-        else:
-            msg = (
-                f"Hi {client.name}, we received your payment of {client.amt_monthly}.\n"
-                "Thank you!"
-            )
-
-        send_message(client.messenger_id, msg)
-
-    await manager.broadcast({
-        "event": "billing_update",
-        "client_id": client.id,
-        "status": client.status.value,
-    })
-
-    return {"message": f"Client {client.id} marked as PAID and restored"}
-
-
-# 🚀 Bulk Set Paid
-@router.post("/set_paid_bulk", response_model=dict)
-async def set_paid_bulk(client_ids: List[int], db: Session = Depends(get_db)):
-    clients = db.query(models.Client).filter(models.Client.id.in_(client_ids)).all()
-    if not clients:
-        raise HTTPException(status_code=404, detail="No clients found")
-
-    for client in clients:
+    for client in shared_clients:
         prev_status = client.status
         client.status = BillingStatus.PAID
         handle_paid_client(db, client)
 
+        # 💬 Notify if Messenger ID exists
         if client.messenger_id:
             if prev_status in [BillingStatus.LIMITED, BillingStatus.CUTOFF]:
                 msg = (
@@ -212,53 +181,135 @@ async def set_paid_bulk(client_ids: List[int], db: Session = Depends(get_db)):
                     f"Hi {client.name}, we received your payment of {client.amt_monthly}.\n"
                     "Thank you!"
                 )
-
             send_message(client.messenger_id, msg)
 
     await manager.broadcast({
-        "event": "billing_update_bulk",
-        "client_ids": [c.id for c in clients],
+        "event": "billing_update",
+        "client_ids": [c.id for c in shared_clients],
         "status": BillingStatus.PAID.value,
     })
 
-    return {"message": f"{len(clients)} clients marked as PAID"}
+    db.commit()
+    return {"message": f"✅ {len(shared_clients)} clients under {main_client.connection_name} marked as PAID"}
 
+# 🚀 Bulk Set Paid (shared connections aware)
+@router.post("/set_paid_bulk", response_model=dict)
+async def set_paid_bulk(client_ids: List[int], db: Session = Depends(get_db)):
+    if not client_ids:
+        raise HTTPException(status_code=400, detail="No client IDs provided")
 
-
-# 🚀 Single Set Unpaid
-@router.post("/{client_id}/set_unpaid", response_model=dict)
-async def set_unpaid(client_id: int, db: Session = Depends(get_db)):
-    client = db.query(models.Client).filter(models.Client.id == client_id).first()
-    if not client:
-        raise HTTPException(status_code=404, detail="Client not found")
-
-    client.status = BillingStatus.UNPAID
-    handle_unpaid_client(db, client)
-
-    await manager.broadcast({
-        "event": "billing_update",
-        "client_id": client.id,
-        "status": client.status.value,
-    })
-
-    return {"message": f"Client {client.id} marked as UNPAID"}
-
-
-# 🚀 Bulk Set Unpaid
-@router.post("/set_unpaid_bulk", response_model=dict)
-async def set_unpaid_bulk(client_ids: List[int], db: Session = Depends(get_db)):
-    clients = db.query(models.Client).filter(models.Client.id.in_(client_ids)).all()
-    if not clients:
+    # Fetch selected clients
+    selected_clients = db.query(models.Client).filter(models.Client.id.in_(client_ids)).all()
+    if not selected_clients:
         raise HTTPException(status_code=404, detail="No clients found")
 
-    for client in clients:
-        client.status = BillingStatus.UNPAID
-        handle_unpaid_client(db, client, "enforce")
+    updated_clients = []
+
+    # Track which connection_name groups we've already updated
+    updated_connection_names = set()
+
+    for client in selected_clients:
+        if client.connection_name in updated_connection_names:
+            continue  # already processed this shared connection
+
+        # Get all clients sharing this connection_name
+        shared_clients = db.query(models.Client).filter(
+            models.Client.connection_name == client.connection_name
+        ).all()
+
+        for c in shared_clients:
+            prev_status = c.status
+            c.status = BillingStatus.PAID
+            handle_paid_client(db, c)
+
+            # Messenger notification
+            if c.messenger_id:
+                if prev_status in [BillingStatus.LIMITED, BillingStatus.CUTOFF]:
+                    msg = (
+                        f"Hi {c.name}, we received your payment of {c.amt_monthly}.\n"
+                        "Your connection will be fully restored shortly. ✅ Thank you!"
+                    )
+                else:
+                    msg = (
+                        f"Hi {c.name}, we received your payment of {c.amt_monthly}.\n"
+                        "Thank you!"
+                    )
+                send_message(c.messenger_id, msg)
+
+        updated_connection_names.add(client.connection_name)
+        updated_clients.extend(shared_clients)
+
+    db.commit()
 
     await manager.broadcast({
         "event": "billing_update_bulk",
-        "client_ids": [c.id for c in clients],
+        "client_ids": [c.id for c in updated_clients],
+        "status": BillingStatus.PAID.value,
+    })
+
+    return {"message": f"✅ {len(updated_clients)} clients marked as PAID across {len(updated_connection_names)} shared connections"}
+
+
+# 🚀 Single Set Unpaid (also updates shared connections)
+@router.post("/{client_id}/set_unpaid", response_model=dict)
+async def set_unpaid(client_id: int, db: Session = Depends(get_db)):
+    main_client = db.query(models.Client).filter(models.Client.id == client_id).first()
+    if not main_client:
+        raise HTTPException(status_code=404, detail="Client not found")
+
+    shared_clients = db.query(models.Client).filter(
+        models.Client.connection_name == main_client.connection_name
+    ).all()
+
+    for client in shared_clients:
+        client.status = BillingStatus.UNPAID
+        handle_unpaid_client(db, client, "enforce")
+
+    db.commit()
+
+    await manager.broadcast({
+        "event": "billing_update",
+        "client_ids": [c.id for c in shared_clients],
         "status": BillingStatus.UNPAID.value,
     })
 
-    return {"message": f"{len(clients)} clients marked as UNPAID"}
+    return {"message": f"⚠️ {len(shared_clients)} clients under {main_client.connection_name} marked as UNPAID"}
+
+
+# 🚀 Bulk Set Unpaid (shared connections aware)
+@router.post("/set_unpaid_bulk", response_model=dict)
+async def set_unpaid_bulk(client_ids: List[int], db: Session = Depends(get_db)):
+    if not client_ids:
+        raise HTTPException(status_code=400, detail="No client IDs provided")
+
+    selected_clients = db.query(models.Client).filter(models.Client.id.in_(client_ids)).all()
+    if not selected_clients:
+        raise HTTPException(status_code=404, detail="No clients found")
+
+    updated_clients = []
+    updated_connection_names = set()
+
+    for client in selected_clients:
+        if client.connection_name in updated_connection_names:
+            continue  # already processed this shared connection
+
+        shared_clients = db.query(models.Client).filter(
+            models.Client.connection_name == client.connection_name
+        ).all()
+
+        for c in shared_clients:
+            c.status = BillingStatus.UNPAID
+            handle_unpaid_client(db, c, "enforce")
+
+        updated_connection_names.add(client.connection_name)
+        updated_clients.extend(shared_clients)
+
+    db.commit()
+
+    await manager.broadcast({
+        "event": "billing_update_bulk",
+        "client_ids": [c.id for c in updated_clients],
+        "status": BillingStatus.UNPAID.value,
+    })
+
+    return {"message": f"⚠️ {len(updated_clients)} clients marked as UNPAID across {len(updated_connection_names)} shared connections"}

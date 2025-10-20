@@ -6,6 +6,7 @@ from datetime import datetime, date
 from sqlalchemy.orm import Session
 from dateutil.relativedelta import relativedelta
 import pytz
+from collections import defaultdict
 
 from app.models import Client, BillingStatus
 from app.utils.mikrotik_config import MikroTikClient
@@ -66,7 +67,6 @@ def get_router_for_client(client: Client, routers: list[dict]):
 def get_last_billing_date(client: Client) -> date:
     return client.billing_date or datetime.now(PH_TZ).date()
 
-
 def enforce_billing_rules(
     client: Client,
     mikrotik: MikroTikClient,
@@ -74,14 +74,12 @@ def enforce_billing_rules(
     last_billing_date: date,
     db: Session,
     mode: str = "enforce",
+    display_name: str = None,
 ):
-  """Apply billing rules based on overdue days and mode ('notification' or 'enforce'),
-  and mirror notices to ADMIN client automatically.
-  """
-
+  """Apply billing rules and mirror notices to ADMIN client automatically."""
   if days_overdue < 0:
     logger.info(
-      f"💰 [{client.name}] Paid in advance — next billing will apply on {last_billing_date}.")
+      f"💰 [{display_name or client.name}] Paid in advance — next billing on {last_billing_date}.")
     return
 
   def safe_float(value):
@@ -94,41 +92,55 @@ def enforce_billing_rules(
     messages = get_messages(client.group_name or "")
     payment_location = messages.get("PAYMENT_LOCATION",
                                     "Sitio Coronado, Malalag Cogon")
+    name_to_show = display_name or client.name
 
-    # helper: mirror notice to admin
+    # ✅ Enhanced mirror_to_admin with shared connection detection
     def mirror_to_admin(notice_type: str, **kwargs):
-        try:
-          # ✅ Filter only admins that match the same group_name
-          admins = (
-            db.query(Client)
-            .filter(Client.connection_name.ilike("ADMIN%"))
-            .filter(Client.group_name == client.group_name)
-            .filter(Client.messenger_id.isnot(None))
-            .all()
+      try:
+        admins = (
+          db.query(Client)
+          .filter(Client.connection_name.ilike("ADMIN%"))
+          .filter(Client.group_name == client.group_name)
+          .filter(Client.messenger_id.isnot(None))
+          .all()
+        )
+
+        if not admins:
+          logger.warning(
+            f"⚠️ No ADMIN accounts found for group '{client.group_name}' — skipping mirror.")
+          return
+
+        admin_msgs = get_messages(client.group_name or "", "ADMIN")
+        if notice_type not in admin_msgs:
+          logger.warning(
+            f"⚠️ No admin message template for '{notice_type}' in group '{client.group_name}'")
+          return
+
+        # ✅ Detect if this connection_name is shared by multiple clients
+        shared_clients = (
+          db.query(Client)
+          .filter(Client.connection_name == client.connection_name)
+          .filter(Client.group_name == client.group_name)
+          .count()
+        )
+        client_identifier = (
+          client.connection_name if shared_clients > 1 else (
+                kwargs.get("client_display") or client.name)
+        )
+        kwargs["client_display"] = client_identifier
+
+        msg_text = safe_format(admin_msgs[notice_type], **kwargs)
+
+        for admin in admins:
+          send_message(admin.messenger_id, msg_text)
+          logger.info(
+            f"📨 Mirrored {notice_type} to {admin.connection_name} "
+            f"(group={admin.group_name}) for [{client_identifier}]."
           )
 
-          if not admins:
-            logger.warning(
-              f"⚠️ No ADMIN accounts found for group '{client.group_name}' — skipping mirror.")
-            return
-
-          admin_msgs = get_messages(client.group_name or "", "ADMIN")
-          if notice_type not in admin_msgs:
-            logger.warning(
-              f"⚠️ No admin message template for '{notice_type}' in group '{client.group_name}'")
-            return
-
-          msg_text = safe_format(admin_msgs[notice_type], **kwargs)
-
-          for admin in admins:
-            send_message(admin.messenger_id, msg_text)
-            logger.info(
-              f"📨 Mirrored {notice_type} to {admin.connection_name} (group={admin.group_name}) for [{client.name}]."
-            )
-
-        except Exception as e:
-          logger.error(
-            f"Failed to mirror {notice_type} to ADMIN(s) in group '{client.group_name}': {e}")
+      except Exception as e:
+        logger.error(
+          f"Failed to mirror {notice_type} to ADMIN(s) in group '{client.group_name}': {e}")
 
     # --- DUE TODAY ---
     if days_overdue == 0:
@@ -137,44 +149,27 @@ def enforce_billing_rules(
           client.status = BillingStatus.UNPAID
           mikrotik.unblock_client(client.connection_name)
           mikrotik.set_speed_limit(client.connection_name, "Unlimited")
-          logger.info(f"🔄 [{client.name}] Status set to UNPAID (due today).")
+          logger.info(f"🔄 [{name_to_show}] Status set to UNPAID (due today).")
 
       if mode == "notification":
         amount_value = safe_float(client.amt_monthly)
         message_text = safe_format(
           messages["DUE_NOTICE"],
+          client_display=name_to_show,
           due_date=last_billing_date.strftime("%B %d, %Y"),
           amount=amount_value,
           payment_location=payment_location,
         )
         send_message(client.messenger_id, message_text)
-        logger.info(f"📩 [{client.name}] DUE notice sent.")
+        logger.info(f"📩 [{name_to_show}] DUE notice sent.")
 
-        # mirror to admin
         mirror_to_admin(
           "DUE_NOTICE",
-          client_name=client.name,
+          client_display=name_to_show,
           group_name=client.group_name,
           due_date=last_billing_date.strftime("%B %d, %Y"),
           amount=amount_value,
         )
-      return
-
-    # --- PAID STATUS CHECK ---
-    if client.status == BillingStatus.PAID:
-      if days_overdue >= 0:
-        client.status = BillingStatus.UNPAID
-        mikrotik.unblock_client(client.connection_name)
-        mikrotik.set_speed_limit(client.connection_name, "Unlimited")
-        logger.info(
-          f"⚠️ [{client.name}] Payment period ended — reverted to UNPAID ({days_overdue}d).")
-        return
-
-      if mode in ["sync", "enforce"] and client.speed_limit != "Unlimited":
-        mikrotik.unblock_client(client.connection_name)
-        mikrotik.set_speed_limit(client.connection_name, "Unlimited")
-        client.speed_limit = "Unlimited"
-        logger.info(f"✅ [{client.name}] Synced: speed reset to Unlimited.")
       return
 
     # --- LIMITED (4–6 days overdue) ---
@@ -183,18 +178,20 @@ def enforce_billing_rules(
         client.status = BillingStatus.LIMITED
         client.speed_limit = "5M/5M"
         mikrotik.set_speed_limit(client.connection_name, "5M/5M")
-        logger.info(f"⚠️ [{client.name}] Enforced limited speed (5M/5M).")
+        logger.info(f"⚠️ [{name_to_show}] Enforced limited speed (5M/5M).")
 
       if mode == "notification":
-        throttle_msg = safe_format(messages["THROTTLE_NOTICE"],
-                                   payment_location=payment_location)
+        throttle_msg = safe_format(
+          messages["THROTTLE_NOTICE"],
+          client_display=name_to_show,
+          payment_location=payment_location,
+        )
         send_message(client.messenger_id, throttle_msg)
-        logger.info(f"📩 [{client.name}] Throttle notice sent.")
+        logger.info(f"📩 [{name_to_show}] Throttle notice sent.")
 
-        # mirror to admin
         mirror_to_admin(
           "THROTTLE_NOTICE",
-          client_name=client.name,
+          client_display=name_to_show,
           group_name=client.group_name,
           due_date=last_billing_date.strftime("%B %d, %Y"),
           amount=safe_float(client.amt_monthly),
@@ -208,18 +205,20 @@ def enforce_billing_rules(
         client.speed_limit = "0M/0M"
         mikrotik.block_client(client.connection_name)
         mikrotik.set_speed_limit(client.connection_name, "0M/0M")
-        logger.info(f"⛔ [{client.name}] Client cutoff enforced.")
+        logger.info(f"⛔ [{name_to_show}] Client cutoff enforced.")
 
       if mode == "notification":
-        disconnection_msg = safe_format(messages["DISCONNECTION_NOTICE"],
-                                        payment_location=payment_location)
+        disconnection_msg = safe_format(
+          messages["DISCONNECTION_NOTICE"],
+          client_display=name_to_show,
+          payment_location=payment_location,
+        )
         send_message(client.messenger_id, disconnection_msg)
-        logger.info(f"📩 [{client.name}] Disconnection notice sent.")
+        logger.info(f"📩 [{name_to_show}] Disconnection notice sent.")
 
-        # mirror to admin
         mirror_to_admin(
           "DISCONNECTION_NOTICE",
-          client_name=client.name,
+          client_display=name_to_show,
           group_name=client.group_name,
           due_date=last_billing_date.strftime("%B %d, %Y"),
           amount=safe_float(client.amt_monthly),
@@ -229,7 +228,6 @@ def enforce_billing_rules(
     logger.error(f"Billing rule failed for {client.name}: {e}")
   finally:
     db.add(client)
-
 
 # =====================================================
 # ✅ Safe Broadcast Utility
@@ -248,10 +246,6 @@ def safe_broadcast(message: dict):
 # =====================================================
 
 def check_billing(db: Session, mode: str = "enforce", group_name: str = None):
-    """
-    Execute billing for a specific router group only (if provided).
-    Prevents duplicate billing runs across routers.
-    """
     today = datetime.now(PH_TZ)
     today_date = today.date()
     routers = load_all_mikrotiks()
@@ -262,6 +256,10 @@ def check_billing(db: Session, mode: str = "enforce", group_name: str = None):
 
     clients = query.all()
     total = cnt_due = cnt_limited = cnt_cutoff = cnt_skipped = 0
+
+    grouped_by_conn = defaultdict(list)
+    for c in clients:
+        grouped_by_conn[c.connection_name].append(c)
 
     logger.info(f"🕒 Billing started at {today.strftime('%Y-%m-%d %H:%M:%S %Z')}")
     logger.info(f"🔔 Starting billing run (mode={mode}) for group='{group_name}' — {len(clients)} clients.")
@@ -282,11 +280,13 @@ def check_billing(db: Session, mode: str = "enforce", group_name: str = None):
 
         last_billing_date = get_last_billing_date(client)
         days_overdue = (today_date - last_billing_date).days
-
         if days_overdue < 0:
             cnt_skipped += 1
             logger.info(f"💰 [{client.name}] Paid in advance — next billing cycle on {last_billing_date}.")
             continue
+
+        shared_count = len(grouped_by_conn[client.connection_name])
+        display_name = client.name if shared_count == 1 else client.connection_name
 
         if client.status == BillingStatus.UNPAID:
             cnt_due += 1
@@ -296,11 +296,11 @@ def check_billing(db: Session, mode: str = "enforce", group_name: str = None):
             cnt_cutoff += 1
 
         old_status = client.status
-        enforce_billing_rules(client, mikrotik, days_overdue, last_billing_date, db, mode)
+        enforce_billing_rules(client, mikrotik, days_overdue, last_billing_date, db, mode, display_name=display_name)
 
         if mode == "enforce" and client.status != old_status:
             logger.info(
-                f"[{client.name}] ({client.group_name}) via {mikrotik.host} → {old_status.value} → {client.status.value}"
+                f"[{display_name}] ({client.group_name}) via {mikrotik.host} → {old_status.value} → {client.status.value}"
             )
             safe_broadcast({
                 "event": "billing_update",
@@ -326,8 +326,16 @@ def check_billing(db: Session, mode: str = "enforce", group_name: str = None):
 
 
 # =====================================================
-# ✅ Apply Billing for One Client
+# ✅ Billing Actions (Paid / Unpaid)
 # =====================================================
+
+def increment_billing_cycle(client: Client):
+    client.billing_date = (client.billing_date or datetime.now(PH_TZ).date()) + relativedelta(months=1)
+
+
+def decrement_billing_cycle(client: Client):
+    client.billing_date = (client.billing_date or datetime.now(PH_TZ).date()) - relativedelta(months=1)
+
 
 def apply_billing_to_client(db: Session, client: Client, mode: str = "enforce"):
     today = datetime.now(PH_TZ).date()
@@ -349,22 +357,6 @@ def apply_billing_to_client(db: Session, client: Client, mode: str = "enforce"):
             "local_time": datetime.now(PH_TZ).strftime("%Y-%m-%d %H:%M:%S %Z"),
         })
     db.commit()
-
-
-# =====================================================
-# ✅ Billing Actions (Paid / Unpaid)
-# =====================================================
-
-def increment_billing_cycle(client: Client):
-    client.billing_date = (
-        (client.billing_date or datetime.now(PH_TZ).date()) + relativedelta(months=1)
-    )
-
-
-def decrement_billing_cycle(client: Client):
-    client.billing_date = (
-        (client.billing_date or datetime.now(PH_TZ).date()) - relativedelta(months=1)
-    )
 
 
 def handle_paid_client(db: Session, client: Client):
