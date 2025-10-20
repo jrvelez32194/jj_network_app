@@ -97,21 +97,38 @@ def enforce_billing_rules(
 
     # helper: mirror notice to admin
     def mirror_to_admin(notice_type: str, **kwargs):
-      try:
-        admin = db.query(Client).filter(
-          Client.connection_name == "ADMIN").first()
-        if not admin or not admin.messenger_id:
-          return
+        try:
+          # ✅ Filter only admins that match the same group_name
+          admins = (
+            db.query(Client)
+            .filter(Client.connection_name.ilike("ADMIN%"))
+            .filter(Client.group_name == client.group_name)
+            .filter(Client.messenger_id.isnot(None))
+            .all()
+          )
 
-        admin_msgs = get_messages(client.group_name or "", "ADMIN")
-        if notice_type not in admin_msgs:
-          return
+          if not admins:
+            logger.warning(
+              f"⚠️ No ADMIN accounts found for group '{client.group_name}' — skipping mirror.")
+            return
 
-        msg_text = safe_format(admin_msgs[notice_type], **kwargs)
-        send_message(admin.messenger_id, msg_text)
-        logger.info(f"📨 Mirrored {notice_type} to ADMIN for [{client.name}].")
-      except Exception as e:
-        logger.error(f"Failed to mirror {notice_type} to ADMIN: {e}")
+          admin_msgs = get_messages(client.group_name or "", "ADMIN")
+          if notice_type not in admin_msgs:
+            logger.warning(
+              f"⚠️ No admin message template for '{notice_type}' in group '{client.group_name}'")
+            return
+
+          msg_text = safe_format(admin_msgs[notice_type], **kwargs)
+
+          for admin in admins:
+            send_message(admin.messenger_id, msg_text)
+            logger.info(
+              f"📨 Mirrored {notice_type} to {admin.connection_name} (group={admin.group_name}) for [{client.name}]."
+            )
+
+        except Exception as e:
+          logger.error(
+            f"Failed to mirror {notice_type} to ADMIN(s) in group '{client.group_name}': {e}")
 
     # --- DUE TODAY ---
     if days_overdue == 0:
