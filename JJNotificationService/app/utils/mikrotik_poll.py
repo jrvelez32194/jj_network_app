@@ -654,7 +654,6 @@ def process_rule(db: Session, client: models.Client, connection_name: str,
       # Track the latest observed state
       last_state[key] = last_state_value
 
-
 # ============================================================
 # Polling logic
 # ============================================================
@@ -684,17 +683,30 @@ def poll_netwatch(
 
     db: Session = next(get_db())
     try:
-      # Track all Netwatch connection names seen in this cycle
       seen_connections = []
 
       for rule in rules:
         connection_name = rule.get("comment") or rule.get("host")
-        connection_name = connection_name.replace("_",
-                                                  "-") if connection_name else connection_name
-        last_state_value = (rule.get("status") or "unknown").upper()
+        connection_name = connection_name.replace("_", "-") if connection_name else connection_name
+        current_state = (rule.get("status") or "unknown").upper()
         seen_connections.append(connection_name)
 
-        # ✅ Try to find matching client (exact or fuzzy)
+        # ✅ Skip transient UNKNOWNs — don't overwrite known UP/DOWN
+        key = f"{connection_name}_{group_name}"
+        prev_state = last_state.get(key)
+        if current_state == "UNKNOWN":
+          logger.debug(f"[{key}] Ignoring transient UNKNOWN (keeping {prev_state})")
+          continue
+
+        # ✅ Debounce confirmation — avoid flickers
+        if prev_state and prev_state != current_state:
+          time.sleep(2)
+          confirm = (rule.get("status") or current_state).upper()
+          if confirm != current_state:
+            logger.debug(f"[{key}] Ignored flicker {current_state} → {confirm}")
+            continue
+
+        # ✅ Proceed as usual
         client = db.query(models.Client).filter(
           or_(
             models.Client.connection_name == connection_name,
@@ -703,28 +715,19 @@ def poll_netwatch(
           )
         ).first()
 
-        effective_group = getattr(client, "group_name",
-                                  None) or group_name or "default"
+        effective_group = getattr(client, "group_name", None) or group_name or "default"
 
-        process_rule(
-          db,
-          client,
-          connection_name,
-          last_state_value,
-          effective_group,
-          ws_manager,
-        )
+        process_rule(db, client, connection_name, current_state, effective_group, ws_manager)
         db.commit()
 
       # ============================================================
-      # ✅ Mark unmatched clients as UNKNOWN
+      # ✅ Mark unmatched clients as UNKNOWN (unchanged)
       # ============================================================
       all_clients = db.query(models.Client).filter(
         models.Client.group_name == group_name
       ).all()
 
       def is_seen(client_name: str | None, seen_list: list[str | None]) -> bool:
-        """Check if a DB client connection name was actually seen in MikroTik Netwatch."""
         if not client_name:
           return False
         cname = client_name.lower()
@@ -732,8 +735,6 @@ def poll_netwatch(
           if not s:
             continue
           s_lower = s.lower()
-          # ✅ Only treat as seen if Netwatch comment exactly matches
-          #    or starts with the client name (not the reverse).
           if s_lower == cname or s_lower.startswith(cname):
             return True
         return False
@@ -741,25 +742,21 @@ def poll_netwatch(
       for client in all_clients:
         if not is_seen(client.connection_name, seen_connections):
           if client.state != "UNKNOWN":
-            logger.info(
-              f"🔄 {client.connection_name} → UNKNOWN (not matched in Netwatch)")
-            process_rule(db, client, client.connection_name, "UNKNOWN",
-                         group_name, ws_manager)
+            logger.info(f"🔄 {client.connection_name} → UNKNOWN (not matched in Netwatch)")
+            process_rule(db, client, client.connection_name, "UNKNOWN", group_name, ws_manager)
       db.commit()
 
       # ============================================================
-      # 🧹 Cleanup stale connection entries (renamed or deleted)
+      # 🧹 Cleanup stale states (unchanged)
       # ============================================================
       active_keys = {f"{c.connection_name}_{group_name}" for c in all_clients}
-      stale_keys = [key for key in list(last_state.keys()) if
-                    key not in active_keys]
+      stale_keys = [key for key in list(last_state.keys()) if key not in active_keys]
       if stale_keys:
         for key in stale_keys:
           timers.pop(key, None)
           notified_state.pop(key, None)
           last_state.pop(key, None)
-        logger.info(
-          f"🧹 Cleaned up {len(stale_keys)} stale state entr{'y' if len(stale_keys) == 1 else 'ies'}.")
+        logger.info(f"🧹 Cleaned up {len(stale_keys)} stale state entr{'y' if len(stale_keys)==1 else 'ies'}.")
 
     except Exception as e:
       db.rollback()
@@ -769,6 +766,21 @@ def poll_netwatch(
 
     time.sleep(interval)
 
+def initialize_state_cache():
+  """Load last known client states from DB into memory on startup."""
+  db = SessionLocal()
+  try:
+    clients = db.query(models.Client).all()
+    for c in clients:
+      group = c.group_name or "default"
+      key = f"{c.connection_name}_{group}"
+      last_state[key] = c.state or "UNKNOWN"
+      notified_state[key] = c.state or "UNKNOWN"
+    logger.info(f"🧠 Initialized state cache for {len(clients)} clients.")
+  except Exception as e:
+    logger.error(f"❌ Failed to initialize state cache: {e}")
+  finally:
+    db.close()
 
 # ============================================================
 # Start polling threads per router group
@@ -777,6 +789,10 @@ def start_polling(username: str, password: str, interval: int = 30,
     ws_manager=None, router_map=None):
   """Start Netwatch polling for each MikroTik router by group."""
   routers = router_map or ROUTER_MAP
+
+  # 🧠 Initialize in-memory state cache
+  initialize_state_cache()
+
   for group_name, host in routers.items():
     thread = threading.Thread(
       target=poll_netwatch,
