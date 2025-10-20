@@ -635,6 +635,15 @@ def process_rule(db: Session, client: models.Client, connection_name: str,
           template_name = f"{connection_name}-{group_name}-{last_state_value}".replace(
             "_", "-").upper()
 
+          # Skip if same as last observed and already notified
+          prev_state = last_state.get(key)
+          prev_notified = notified_state.get(key)
+
+          if prev_state == last_state_value and prev_notified == last_state_value:
+            logger.info(
+              f"[{key}] State remains {last_state_value}, already notified → skip")
+            return
+
           # Schedule delayed notification (debounced & spike aware)
           schedule_notify(key, template_name, connection_name, group_name,
                           last_state_value)
@@ -767,20 +776,30 @@ def poll_netwatch(
     time.sleep(interval)
 
 def initialize_state_cache():
-  """Load last known client states from DB into memory on startup."""
-  db = SessionLocal()
-  try:
-    clients = db.query(models.Client).all()
-    for c in clients:
-      group = c.group_name or "default"
-      key = f"{c.connection_name}_{group}"
-      last_state[key] = c.state or "UNKNOWN"
-      notified_state[key] = c.state or "UNKNOWN"
-    logger.info(f"🧠 Initialized state cache for {len(clients)} clients.")
-  except Exception as e:
-    logger.error(f"❌ Failed to initialize state cache: {e}")
-  finally:
-    db.close()
+    """Load last known client states from DB into memory on startup.
+
+    NOTE:
+      - last_state is populated from DB so the poller knows the previous state.
+      - notified_state is intentionally left as None so the system WILL send an
+        initial notification on startup for a real DOWN/UP condition (but will
+        not repeatedly spam because schedule_notify enforces cooldown).
+    """
+    db = SessionLocal()
+    try:
+      clients = db.query(models.Client).all()
+      for c in clients:
+        group = c.group_name or "default"
+        key = f"{c.connection_name}_{group}"
+        # Keep observed last_state so poller can compare subsequent observations
+        last_state[key] = c.state or "UNKNOWN"
+        # Do NOT mark as already-notified — allow an initial notification on startup
+        # Set to None as sentinel for "not yet notified since this process start".
+        notified_state[key] = None
+      logger.info(f"🧠 Initialized state cache for {len(clients)} clients (notified_state cleared).")
+    except Exception as e:
+      logger.error(f"❌ Failed to initialize state cache: {e}")
+    finally:
+      db.close()
 
 # ============================================================
 # Start polling threads per router group
