@@ -75,91 +75,143 @@ def enforce_billing_rules(
     db: Session,
     mode: str = "enforce",
 ):
-    """Apply billing rules based on overdue days and mode ('notification' or 'enforce')."""
+  """Apply billing rules based on overdue days and mode ('notification' or 'enforce'),
+  and mirror notices to ADMIN client automatically.
+  """
 
-    if days_overdue < 0:
-        logger.info(f"💰 [{client.name}] Paid in advance — next billing will apply on {last_billing_date}.")
+  if days_overdue < 0:
+    logger.info(
+      f"💰 [{client.name}] Paid in advance — next billing will apply on {last_billing_date}.")
+    return
+
+  def safe_float(value):
+    try:
+      return float(value)
+    except (TypeError, ValueError):
+      return 0.0
+
+  try:
+    messages = get_messages(client.group_name or "")
+    payment_location = messages.get("PAYMENT_LOCATION",
+                                    "Sitio Coronado, Malalag Cogon")
+
+    # helper: mirror notice to admin
+    def mirror_to_admin(notice_type: str, **kwargs):
+      try:
+        admin = db.query(Client).filter(
+          Client.connection_name == "ADMIN").first()
+        if not admin or not admin.messenger_id:
+          return
+
+        admin_msgs = get_messages(client.group_name or "", "ADMIN")
+        if notice_type not in admin_msgs:
+          return
+
+        msg_text = safe_format(admin_msgs[notice_type], **kwargs)
+        send_message(admin.messenger_id, msg_text)
+        logger.info(f"📨 Mirrored {notice_type} to ADMIN for [{client.name}].")
+      except Exception as e:
+        logger.error(f"Failed to mirror {notice_type} to ADMIN: {e}")
+
+    # --- DUE TODAY ---
+    if days_overdue == 0:
+      if mode == "enforce":
+        if client.status != BillingStatus.UNPAID:
+          client.status = BillingStatus.UNPAID
+          mikrotik.unblock_client(client.connection_name)
+          mikrotik.set_speed_limit(client.connection_name, "Unlimited")
+          logger.info(f"🔄 [{client.name}] Status set to UNPAID (due today).")
+
+      if mode == "notification":
+        amount_value = safe_float(client.amt_monthly)
+        message_text = safe_format(
+          messages["DUE_NOTICE"],
+          due_date=last_billing_date.strftime("%B %d, %Y"),
+          amount=amount_value,
+          payment_location=payment_location,
+        )
+        send_message(client.messenger_id, message_text)
+        logger.info(f"📩 [{client.name}] DUE notice sent.")
+
+        # mirror to admin
+        mirror_to_admin(
+          "DUE_NOTICE",
+          client_name=client.name,
+          group_name=client.group_name,
+          due_date=last_billing_date.strftime("%B %d, %Y"),
+          amount=amount_value,
+        )
+      return
+
+    # --- PAID STATUS CHECK ---
+    if client.status == BillingStatus.PAID:
+      if days_overdue >= 0:
+        client.status = BillingStatus.UNPAID
+        mikrotik.unblock_client(client.connection_name)
+        mikrotik.set_speed_limit(client.connection_name, "Unlimited")
+        logger.info(
+          f"⚠️ [{client.name}] Payment period ended — reverted to UNPAID ({days_overdue}d).")
         return
 
-    def safe_float(value):
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            return 0.0
+      if mode in ["sync", "enforce"] and client.speed_limit != "Unlimited":
+        mikrotik.unblock_client(client.connection_name)
+        mikrotik.set_speed_limit(client.connection_name, "Unlimited")
+        client.speed_limit = "Unlimited"
+        logger.info(f"✅ [{client.name}] Synced: speed reset to Unlimited.")
+      return
 
-    try:
-        messages = get_messages(client.group_name or "")
-        payment_location = messages.get("PAYMENT_LOCATION", "Sitio Coronado, Malalag Cogon")
+    # --- LIMITED (4–6 days overdue) ---
+    if 4 <= days_overdue < 7 and client.status != BillingStatus.LIMITED:
+      if mode == "enforce":
+        client.status = BillingStatus.LIMITED
+        client.speed_limit = "5M/5M"
+        mikrotik.set_speed_limit(client.connection_name, "5M/5M")
+        logger.info(f"⚠️ [{client.name}] Enforced limited speed (5M/5M).")
 
-        # --- DUE TODAY ---
-        if days_overdue == 0:
-            if mode == "enforce":
-                if client.status != BillingStatus.UNPAID:
-                    client.status = BillingStatus.UNPAID
-                    mikrotik.unblock_client(client.connection_name)
-                    mikrotik.set_speed_limit(client.connection_name, "Unlimited")
-                    logger.info(f"🔄 [{client.name}] Status set to UNPAID (due today).")
+      if mode == "notification":
+        throttle_msg = safe_format(messages["THROTTLE_NOTICE"],
+                                   payment_location=payment_location)
+        send_message(client.messenger_id, throttle_msg)
+        logger.info(f"📩 [{client.name}] Throttle notice sent.")
 
-            if mode == "notification":
-                amount_value = safe_float(client.amt_monthly)
-                message_text = safe_format(
-                    messages["DUE_NOTICE"],
-                    due_date=last_billing_date.strftime("%B %d, %Y"),
-                    amount=amount_value,
-                    payment_location=payment_location,
-                )
-                send_message(client.messenger_id, message_text)
-                logger.info(f"📩 [{client.name}] DUE notice sent.")
-            return
+        # mirror to admin
+        mirror_to_admin(
+          "THROTTLE_NOTICE",
+          client_name=client.name,
+          group_name=client.group_name,
+          due_date=last_billing_date.strftime("%B %d, %Y"),
+          amount=safe_float(client.amt_monthly),
+        )
+      return
 
-        # --- PAID STATUS CHECK ---
-        if client.status == BillingStatus.PAID:
-            if days_overdue >= 0:
-                client.status = BillingStatus.UNPAID
-                mikrotik.unblock_client(client.connection_name)
-                mikrotik.set_speed_limit(client.connection_name, "Unlimited")
-                logger.info(f"⚠️ [{client.name}] Payment period ended — reverted to UNPAID ({days_overdue}d).")
-                return
+    # --- CUTOFF (7+ days overdue) ---
+    if days_overdue >= 7 and client.status != BillingStatus.CUTOFF:
+      if mode == "enforce":
+        client.status = BillingStatus.CUTOFF
+        client.speed_limit = "0M/0M"
+        mikrotik.block_client(client.connection_name)
+        mikrotik.set_speed_limit(client.connection_name, "0M/0M")
+        logger.info(f"⛔ [{client.name}] Client cutoff enforced.")
 
-            if mode in ["sync", "enforce"] and client.speed_limit != "Unlimited":
-                mikrotik.unblock_client(client.connection_name)
-                mikrotik.set_speed_limit(client.connection_name, "Unlimited")
-                client.speed_limit = "Unlimited"
-                logger.info(f"✅ [{client.name}] Synced: speed reset to Unlimited.")
-            return
+      if mode == "notification":
+        disconnection_msg = safe_format(messages["DISCONNECTION_NOTICE"],
+                                        payment_location=payment_location)
+        send_message(client.messenger_id, disconnection_msg)
+        logger.info(f"📩 [{client.name}] Disconnection notice sent.")
 
-        # --- LIMITED (4–6 days overdue) ---
-        if 4 <= days_overdue < 7 and client.status != BillingStatus.LIMITED:
-            if mode == "enforce":
-                client.status = BillingStatus.LIMITED
-                client.speed_limit = "5M/5M"
-                mikrotik.set_speed_limit(client.connection_name, "5M/5M")
-                logger.info(f"⚠️ [{client.name}] Enforced limited speed (5M/5M).")
+        # mirror to admin
+        mirror_to_admin(
+          "DISCONNECTION_NOTICE",
+          client_name=client.name,
+          group_name=client.group_name,
+          due_date=last_billing_date.strftime("%B %d, %Y"),
+          amount=safe_float(client.amt_monthly),
+        )
 
-            if mode == "notification":
-                throttle_msg = safe_format(messages["THROTTLE_NOTICE"], payment_location=payment_location)
-                send_message(client.messenger_id, throttle_msg)
-                logger.info(f"📩 [{client.name}] Throttle notice sent.")
-            return
-
-        # --- CUTOFF (7+ days overdue) ---
-        if days_overdue >= 7 and client.status != BillingStatus.CUTOFF:
-            if mode == "enforce":
-                client.status = BillingStatus.CUTOFF
-                client.speed_limit = "0M/0M"
-                mikrotik.block_client(client.connection_name)
-                mikrotik.set_speed_limit(client.connection_name, "0M/0M")
-                logger.info(f"⛔ [{client.name}] Client cutoff enforced.")
-
-            if mode == "notification":
-                disconnection_msg = safe_format(messages["DISCONNECTION_NOTICE"], payment_location=payment_location)
-                send_message(client.messenger_id, disconnection_msg)
-                logger.info(f"📩 [{client.name}] Disconnection notice sent.")
-
-    except Exception as e:
-        logger.error(f"Billing rule failed for {client.name}: {e}")
-    finally:
-        db.add(client)
+  except Exception as e:
+    logger.error(f"Billing rule failed for {client.name}: {e}")
+  finally:
+    db.add(client)
 
 
 # =====================================================
