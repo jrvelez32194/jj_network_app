@@ -33,3 +33,5 @@ Since you already have docker-compose.yml pointing to jjnotificationservice:arm 
 
 cd ~/jjnet
 docker compose --env-file .env up --build
+or 
+docker compose up --build
