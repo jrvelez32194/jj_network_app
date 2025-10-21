@@ -46,22 +46,37 @@ timers = {}
 DELAY = 90  # seconds before sending notification
 
 # ============================================================
-# Spike tracking (flip history, spiking windows)
+# Adaptive Spike detection & hold parameters
 # - flip_history keeps per-key timestamps of flips
 # - spike_start indicates when spiking began
 # - spike_notified prevents repeated spike alerts
 # ============================================================
-# stored on schedule_notify function object via attributes
-# schedule_notify._flip_history: dict[state_key] -> {"flips": [timestamps], "spike_start": float|None, "spike_notified": bool}
-# parameters for detection:
-SPIKE_FLAP_WINDOW = 5 * 60      # 5 minutes window to count flaps (general)
-SPIKE_FLAP_THRESHOLD = 3        # >=3 flips inside window => considered spiking
+# Stored on schedule_notify function object via attributes:
+# schedule_notify._flip_history: dict[state_key] -> {"flips": [timestamps], "spike_start": float|None, ...}
+
+# Base detection windows & thresholds
+BASE_SPIKE_WINDOW = 3 * 60       # base detection window (3 minutes)
+SPIKE_FLAP_THRESHOLD = 3         # flips in base window = spiking
 SPIKE_ESCALATE_SECONDS = 10 * 60  # 10 minutes of spiking before admin "spiking" alert
 
-# Early spike specifics
+# Early spike specifics (quick early-alert)
 EARLY_SPIKE_WINDOW = 3 * 60     # 3 minutes window for early detection
 EARLY_SPIKE_THRESHOLD = 3       # 3 flips in window -> early spike
-STABLE_CLEAR_WINDOW = 5 * 60    # 5 minutes stable to consider recovered
+
+# Stability/clear windows used when deciding to clear spiking state
+STABLE_CLEAR_WINDOW = 3 * 60    # 3 minutes stable to consider recovered
+
+# Backwards-compatible alias for places using SPIKE_FLAP_WINDOW
+SPIKE_FLAP_WINDOW = BASE_SPIKE_WINDOW
+
+# Adaptive hold thresholds: (flap_count_threshold, hold_seconds)
+# System will pick the highest matching threshold.
+HOLD_LEVELS = [
+    (3, 3 * 60),  # mild instability -> 3 minutes hold
+    (5, 5 * 60),  # moderate instability -> 5 minutes hold
+    (8, 8 * 60),  # severe instability -> 8 minutes hold
+]
+
 DEBOUNCE_SHORT = 30             # 30s short debounce (used elsewhere if needed)
 
 
@@ -147,7 +162,7 @@ def _compose_message(template_name: str, client_conn_name: str | None,
 
   location_suffix = GROUP_LOCATION.get(group, "")
 
-  # Default fallback messages
+  # Default fallback message
   base = "Notification."
 
   # NORMAL (non-spike)
@@ -181,7 +196,6 @@ def _compose_message(template_name: str, client_conn_name: str | None,
         else:
           base = "⚠️ Your connection is currently down. Please check the cable and plug."
     else:
-      # generic fallback
       if event == "UP":
         base = "✅ Service is back online. Service restored."
       else:
@@ -190,14 +204,12 @@ def _compose_message(template_name: str, client_conn_name: str | None,
   # SPIKE messages (fallback)
   else:
     if metric in ("CONNECTION", "PING") and service_label:
-      # For ISP-type SPIKEs display human-readable service_label
       if event == "UP":
         base = f"✅ {service_label} is now stable and running smoothly again."
       else:
         base = f"⚠️ {service_label} is slow and unstable or experiencing latency."
     elif metric == "VENDO":
       cn = client_conn_name or "VENDO"
-      # for quick fallback: non-admin vs admin wording handled elsewhere (notify_clients)
       if event == "UP":
         base = f"✅ VENDO {cn} is now stable."
       else:
@@ -220,12 +232,18 @@ def _compose_message(template_name: str, client_conn_name: str | None,
       else:
         base = "⚠️ Service is slow and unstable or experiencing latency."
 
-  # Append location suffix only for ISP-type notifications (CONNECTION or PING)
+  # Append secondary-service note for G1 DOWN events before location suffix
+  if metric in ("CONNECTION", "PING") and event == "DOWN" and group == "G1":
+    base = f"{base} Switching to Secondary Service Provider to maintain stable connectivity."
+
+  if metric in ("CONNECTION", "PING") and event == "UP" and group == "G1":
+    base = f"{base} Switching back to Primary Service Provider to maintain performance connectivity."
+
+  # Append location suffix (always last)
   if metric in ("CONNECTION", "PING") and location_suffix:
     base = f"{base} - {location_suffix}"
 
   return base
-
 
 # ============================================================
 # Notification helpers (merged, full-featured)
@@ -311,68 +329,55 @@ def notify_clients(db: Session, template_name: str, connection_name: str = None,
     return
 
   # ============================================================
-  # 🧾 VENDO / PRIVATE
+  # 🔔 Handle VENDO / PRIVATE metrics (spiking, up, down)
   # ============================================================
   if metric in ("VENDO", "PRIVATE"):
-    from sqlalchemy import or_
+    # Fetch all candidate (non-admin) clients in the same group
+    candidates = (
+      db.query(models.Client)
+      .filter(
+        models.Client.group_name == group_name,
+        models.Client.connection_name == connection_name,
+        ~models.Client.connection_name.ilike("%ADMIN%")
+      )
+      .all()
+    )
 
-    base_query = db.query(models.Client)
-    if group_name:
-      base_query = base_query.filter(models.Client.group_name == group_name)
-
-    # Find mapped clients for the connection
-    if connection_name:
-      candidates = base_query.filter(
-        or_(
-          models.Client.connection_name == connection_name,
-          models.Client.connection_name.ilike(f"{connection_name}%"),
-          models.Client.connection_name.ilike(f"%{connection_name}%"),
-        )
-      ).all()
-    else:
-      candidates = base_query.filter(
-        models.Client.connection_name.ilike(f"%{metric}%")).all()
-
-    if not candidates:
-      logger.info(f"No mapped clients found for {metric} ({connection_name})")
-      return
-
-    # Notify mapped clients (non-admin/admin content handled)
+    # Notify mapped clients (non-admin)
     for client in candidates:
       client_conn = client.connection_name or ""
       client_is_admin = "ADMIN" in client_conn.upper()
 
-      # If it's a spiking event: override messages with the requested wording
+      # Construct message for spike or regular events
       if is_spike:
-        if client_is_admin:
-          # Admins: short spiking alert (they asked for {connection} ... healthy/kindly visit)
-          cn = connection_name or client_conn or metric
-          admin_msg = f"{cn} has been spiking for 10 minutes. Please check the site and visit to verify."
+        # ✅ Spiking events
+        if metric == "PRIVATE":
           if client.status == BillingStatus.LIMITED:
-              admin_msg = f"{cn} has been spiking for 10 minutes. This may be due to LIMITED CONNECTION POLICY."
-          message_text = admin_msg
-        else:
-          # Non-admin: send unstable instructions (private/vendo differ slightly)
-          if metric == "PRIVATE":
-            if client.status == BillingStatus.LIMITED :
-              message_text = ("⚠️ Your connection is unstable. This may be due to LIMITED CONNECTION POLICY. "
-                              "Please settle your payment to restore full service.")
-            else :
-              message_text = (
-                "⚠️ Your connection is unstable. Kindly check the cables and indicator lights. "
-                "The black device should show 5 lights and the white device should not have a red light. "
-                "Please report to the administrator if the issue persists or if no action is taken within a day."
-              )
-          else:  # VENDO
+            # Limited client message
             message_text = (
-              "⚠️ Vendo is unstable. Kindly check the cables and indicator light. "
-              "The black device should show 5 lights. "
+              "⚠️ Connection is unstable. This may be due to LIMITED CONNECTION POLICY. "
+              "Please settle your payment to restore full service."
+            )
+          else:
+            # Regular private spike
+            message_text = (
+              "⚠️ Your connection is unstable. Kindly check the cables and indicator lights. "
+              "The black device should show 5 lights and the white device should not have a red light. "
               "Please report to the administrator if the issue persists or if no action is taken within a day."
             )
+        else:
+          # Vendo spike
+          message_text = (
+            "⚠️ Vendo is unstable. Kindly check the cables and indicator light. "
+            "The black device should show 5 lights. "
+            "Please report to the administrator if the issue persists or if no action is taken within a day."
+          )
       else:
-        # Non-spike -> use the normal composition fallback
-        message_text = _compose_message(template_key, client_conn, client_is_admin)
+        # ✅ Normal UP/DOWN notifications (non-spike)
+        message_text = _compose_message(template_key, client_conn,
+                                        client_is_admin)
 
+      # Send message
       try:
         resp = send_message(client.messenger_id, message_text)
         status = resp.get("message_id", "failed")
@@ -382,25 +387,37 @@ def notify_clients(db: Session, template_name: str, connection_name: str = None,
       db.add(models.MessageLog(client_id=client.id, template_id=template.id,
                                status=status))
       db.commit()
-      logger.info(
-        f"📩 Notified {'ADMIN' if client_is_admin else 'NON-ADMIN'} {client.name} ({client.connection_name}) with '{template_key}'")
 
-    # ----------------------------------------------------------
-    # 📢 NEW: Also notify all admins in the same group (private/admin must always be notified)
-    # If spiking: use spiking admin grammar. Otherwise use up/down messages.
-    # ----------------------------------------------------------
-    admin_clients = db.query(models.Client).filter(
-      models.Client.group_name == group_name,
-      models.Client.connection_name.ilike("%ADMIN%")
-    ).all()
+      logger.info(
+        f"📩 Notified NON-ADMIN {client.name} ({client.connection_name}) with '{template_key}'"
+      )
+
+    # ============================================================
+    # 🔔 Admin Notification
+    # ============================================================
+    admin_clients = (
+      db.query(models.Client)
+      .filter(
+        models.Client.group_name == group_name,
+        models.Client.connection_name.ilike("%ADMIN%")
+      )
+      .all()
+    )
 
     cn = connection_name or metric
-    for admin in admin_clients:
-      if is_spike:
-        # Spiking admin message (requested grammar)
-        msg = f"{cn} has been spiking for 10 minutes. Please check the site and visit to verify."
-      else:
-        # Non-spike admin wording - keep previous behavior but improved grammar
+
+    if is_spike:
+      # Send spike-specific admin message once (via notify_admin)
+      notify_admin(
+        db,
+        group_name,
+        cn,
+        candidates[0].status if candidates else None,
+        template_key,
+      )
+    else:
+      # Normal UP/DOWN notification for admins
+      for admin in admin_clients:
         if metric == "VENDO":
           prefix = "🏧 [VENDO Alert]"
         else:
@@ -411,17 +428,19 @@ def notify_clients(db: Session, template_name: str, connection_name: str = None,
         else:
           msg = f"{prefix} {cn} is currently down. Please check the cable and plug."
 
-      try:
-        resp = send_message(admin.messenger_id, msg)
-        status = resp.get("message_id", "failed")
-      except Exception:
-        status = "failed"
+        try:
+          resp = send_message(admin.messenger_id, msg)
+          status = resp.get("message_id", "failed")
+        except Exception:
+          status = "failed"
 
-      db.add(models.MessageLog(client_id=admin.id, template_id=template.id,
-                               status=status))
-      db.commit()
-      logger.info(
-        f"📩 [ADMIN NOTICE] {admin.name} ({admin.connection_name}) received '{template_key}' for {cn}")
+        db.add(models.MessageLog(client_id=admin.id, template_id=template.id,
+                                 status=status))
+        db.commit()
+
+        logger.info(
+          f"📩 [ADMIN NOTICE] {admin.name} ({admin.connection_name}) received '{template_key}' for {cn}"
+        )
 
     return
 
@@ -456,6 +475,45 @@ def notify_clients(db: Session, template_name: str, connection_name: str = None,
       f"📩 Notified {client.name} ({client.connection_name}) with '{template_key}'")
 
 
+def notify_admin(db: Session, group_name: str, connection_name: str,
+    status: str, template_key: str, msg_normal: str = None):
+  cn = connection_name
+
+  # ✅ Use wildcard to match any ADMIN variant (e.g., "ISP1-ADMIN", "PRIVATE-ADMIN")
+  admin_clients = (
+    db.query(models.Client)
+    .filter(
+      models.Client.group_name == group_name,
+      models.Client.connection_name.ilike("%ADMIN%")
+    )
+    .all()
+  )
+
+  # ✅ Build proper admin message
+  if not msg_normal:
+    if status == BillingStatus.LIMITED:
+      admin_msg = (
+        f"⚠️ {cn} has been spiking for 10 minutes. "
+        f"This may be due to LIMITED CONNECTION POLICY of the private connection."
+      )
+    else:
+      admin_msg = (
+        f"⚠️ {cn} has been spiking for 10 minutes. "
+        f"Please check the site and visit to verify."
+      )
+  else:
+    admin_msg = msg_normal
+
+  # ✅ Send the message to all admin clients
+  for admin in admin_clients:
+    try:
+      send_message(admin.messenger_id, admin_msg)
+      logger.info(
+        f"📩 Notified ADMIN {admin.name} ({admin.connection_name}) with '{template_key}'"
+      )
+    except Exception as e:
+      logger.error(f"Sending failed for ADMIN Notification: {e}")
+
 def schedule_notify(state_key: str, template_name: str, connection_name: str,
     group_name: str, new_state: str):
   """
@@ -464,6 +522,7 @@ def schedule_notify(state_key: str, template_name: str, connection_name: str,
   Enhancements:
     - EARLY SPIKE: if >=3 flips in 3 minutes -> mark as spiking, hold DB DOWN,
       notify affected (connection-group-SPIKE-DOWN) via notify_clients
+    - Adaptive HOLD: hold DOWN notifications for 3/5/8 minutes depending on flap count
     - Existing spike escalation (10 minutes) preserved, sends connection-group-SPIKE-DOWN
     - Recovery sends connection-group-SPIKE-UP after stable window
     - Prevent duplicate early/recovery notifications per cycle
@@ -492,6 +551,7 @@ def schedule_notify(state_key: str, template_name: str, connection_name: str,
           "early_spike_sent": False,
           "recovery_sent": False,
           "cycle_id": 0,
+          # optional: "hold_down_until": None
       },
   )
   # Append this flip timestamp
@@ -501,11 +561,11 @@ def schedule_notify(state_key: str, template_name: str, connection_name: str,
   entry["flips"] = [t for t in entry["flips"] if t >= cutoff]
 
   # ---------------------------
-  # EARLY SPIKING: 3+ flips in 3 minutes
+  # EARLY SPIKING: 3+ flips in EARLY_SPIKE_WINDOW
   # ---------------------------
   recent_flips = [t for t in entry["flips"] if t >= now - EARLY_SPIKE_WINDOW]
   if len(recent_flips) >= EARLY_SPIKE_THRESHOLD and not entry.get("early_spike_sent", False):
-    logger.warning(f"[{state_key}] ⚠️ Rapid flipping detected ({len(recent_flips)} in 3min) → Early SPIKE DOWN")
+    logger.warning(f"[{state_key}] ⚠️ Rapid flipping detected ({len(recent_flips)} in {EARLY_SPIKE_WINDOW//60}min) → Early SPIKE DOWN")
     db = SessionLocal()
     try:
       # Mark affected clients DOWN in DB (hold)
@@ -523,8 +583,6 @@ def schedule_notify(state_key: str, template_name: str, connection_name: str,
       db.commit()
 
       # Send early spike notification using standardized key: connection-group-SPIKE-DOWN
-      # Keep the message key including the raw connection_name token, but display text
-      # will be derived in notify_clients/_compose_message (service_label_from_isp).
       spike_key = f"{connection_name}-{group_name}-SPIKE-DOWN".upper()
       notify_clients(db, spike_key, connection_name, group_name)
 
@@ -535,17 +593,36 @@ def schedule_notify(state_key: str, template_name: str, connection_name: str,
       # set spike_start if not already set so escalate logic still works
       if entry.get("spike_start") is None:
         entry["spike_start"] = recent_flips[0]
+
+      # NEW: determine adaptive hold based on current flips and set hold_down_until
+      flap_count_recent = len(entry["flips"])
+      adaptive_hold = HOLD_LEVELS[0][1]  # default to first level
+      for threshold, hold_time in HOLD_LEVELS:
+        if flap_count_recent >= threshold:
+          adaptive_hold = hold_time
+      entry["hold_down_until"] = time.time() + adaptive_hold
+      logger.info(f"[{state_key}] Hold-down set to {adaptive_hold/60:.0f} minutes (flaps={flap_count_recent})")
+
     except Exception as e:
       logger.error(f"[{state_key}] Failed to process early spike: {e}")
       db.rollback()
     finally:
       db.close()
 
-  # Determine if flipping indicates spiking for general logic
+  # Determine if flipping indicates spiking for general logic (using SPIKE_FLAP_WINDOW)
   if len(entry["flips"]) >= SPIKE_FLAP_THRESHOLD:
     if entry["spike_start"] is None:
       entry["spike_start"] = entry["flips"][0]  # earliest flip within window
       logger.info(f"[{state_key}] Spiking detected, spike_start set to {entry['spike_start']}")
+      # If not already set, set an adaptive hold_down_until when spiking first discovered
+      if not entry.get("hold_down_until"):
+        flap_count_recent = len(entry["flips"])
+        adaptive_hold = HOLD_LEVELS[0][1]
+        for threshold, hold_time in HOLD_LEVELS:
+          if flap_count_recent >= threshold:
+            adaptive_hold = hold_time
+        entry["hold_down_until"] = time.time() + adaptive_hold
+        logger.info(f"[{state_key}] Hold-down set to {adaptive_hold/60:.0f} minutes (flaps={flap_count_recent})")
   else:
     # not enough flips to consider spiking; keep spike_start as-is (do not clear immediately)
     pass
@@ -605,6 +682,39 @@ def schedule_notify(state_key: str, template_name: str, connection_name: str,
       # Do not proceed with normal same-state notification after spike alert here
       timers.pop(state_key, None)
       return
+
+    # NEW: if we are about to send a DOWN notification, but hold_down_until exists and is in the future,
+    # then wait until hold_down_until or until final_state changes.
+    hold_until = entry.get("hold_down_until")
+    if new_state == "DOWN" and hold_until and time.time() < hold_until:
+      # wait in small sleeps until either the hold expires or the state flips away
+      logger.info(f"[{state_key}] DOWN suppressed due to hold (until {hold_until}). Waiting for stability...")
+      while time.time() < hold_until:
+        if last_state.get(state_key) != "DOWN":
+          logger.info(f"[{state_key}] State changed while holding (no longer DOWN). Cancel suppressed send.")
+          timers.pop(state_key, None)
+          return
+        time.sleep(5)
+
+      # After hold expires, ensure we have a stable period of hold duration (confirm)
+      # Use the same adaptive hold duration for this final confirmation if needed.
+      stable_confirm_seconds = 0
+      # If hold was previously set, compute remaining hold length as confirmation window
+      # (We use the largest configured level that matched the current flip count previously.)
+      # For simplicity, we confirm with default 60s if not derivable.
+      stable_confirm_seconds = 60
+
+      stable_check_start = time.time()
+      while time.time() - stable_check_start < stable_confirm_seconds:
+        if last_state.get(state_key) != "DOWN":
+          logger.info(f"[{state_key}] Not stable during post-hold check. Cancel sending DOWN.")
+          timers.pop(state_key, None)
+          return
+        time.sleep(5)
+      logger.info(f"[{state_key}] Hold expired and connection stable for {stable_confirm_seconds}s. Proceeding with DOWN notification.")
+
+      # Clear the hold marker so we don't block future sends
+      entry.pop("hold_down_until", None)
 
     # If early spike was sent earlier and now enough stable time has passed, send recovery (SPIKE-UP)
     if entry.get("early_spike_sent", False):
