@@ -361,8 +361,18 @@ def apply_billing_to_client(db: Session, client: Client, mode: str = "enforce"):
 
 def handle_paid_client(db: Session, client: Client):
     try:
-        if client.speed_limit != "Unlimited":
-            client.speed_limit = "Unlimited"
+        routers = load_all_mikrotiks()
+        mikrotik = get_router_for_client(client, routers)
+
+        # ✅ Always unblock + restore full speed when paid
+        if mikrotik:
+          mikrotik.unblock_client(client.connection_name)
+          mikrotik.set_speed_limit(client.connection_name, "Unlimited")
+          logger.info(
+          f"✅ [{client.name}] unblocked and speed reset to Unlimited (PAID).")
+
+        client.status = BillingStatus.PAID
+        client.speed_limit = "Unlimited"
 
         increment_billing_cycle(client)
         apply_billing_to_client(db, client, "enforce")
