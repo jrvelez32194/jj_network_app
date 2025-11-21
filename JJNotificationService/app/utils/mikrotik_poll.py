@@ -315,6 +315,15 @@ def notify_clients(db: Session, template_name: str, connection_name: str = None,
             client_conn = client.connection_name or ""
             client_is_admin = "ADMIN" in client_conn.upper()
 
+            # ❌ NEW RULE: PRIVATE + (UNPAID or CUT_OFF) = NO NOTIFICATION
+            if metric == "PRIVATE" and client.status in (BillingStatus.UNPAID,
+                                                         BillingStatus.CUTOFF):
+              logger.info(
+                f"⏭️ Skipping notification for PRIVATE client {client.name} "
+                f"({client.connection_name}) because status = {client.status}"
+              )
+              continue
+
             if is_spike:
                 if metric == "PRIVATE":
                     if client.status == BillingStatus.LIMITED:
