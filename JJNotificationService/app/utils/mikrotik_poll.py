@@ -238,6 +238,7 @@ def _compose_message(template_name: str, client_conn_name: str | None,
 # ============================================================
 # Notification helpers (merged, full-featured)
 # ============================================================
+
 def notify_clients(db: Session, template_name: str, connection_name: str = None,
     group_name: str | None = None):
     if not template_name:
@@ -261,6 +262,13 @@ def notify_clients(db: Session, template_name: str, connection_name: str = None,
         db.refresh(template)
         logger.info(f"🆕 Template '{template_key}' created with default content.")
 
+    # ------------------------------------------------------------
+    # If metric is a provider-level event (CONNECTION/PING/ISP*),
+    # we notify non-admin and admin clients in the group — BUT
+    # apply the rule: private customers who are UNPAID or CUTOFF
+    # receive NO notifications (including ISP/provider notifications).
+    # If a private customer is LIMITED, send the limited-policy message.
+    # ------------------------------------------------------------
     if metric in ("CONNECTION", "PING") or any(p.startswith("ISP") for p in parts):
         from sqlalchemy import and_
 
@@ -269,14 +277,35 @@ def notify_clients(db: Session, template_name: str, connection_name: str = None,
             base_query = base_query.filter(models.Client.group_name == group_name)
 
         non_admins = base_query.filter(
-            ~models.Client.connection_name.ilike("%ADMIN%")).all()
+            ~models.Client.connection_name.ilike("%ADMIN%")
+        ).all()
+
         for client in non_admins:
-            msg = _compose_message(template_key, client.connection_name, False)
+            client_conn = (client.connection_name or "").upper()
+
+            # If this is a PRIVATE connection and the customer is UNPAID or CUTOFF -> skip ALL notifications
+            if "PRIVATE" in client_conn and client.status in (BillingStatus.UNPAID, BillingStatus.CUTOFF):
+                logger.info(
+                    f"⏭️ Skipping notification for PRIVATE client {client.name} ({client.connection_name}) because status = {client.status}"
+                )
+                continue
+
+            # If PRIVATE and LIMITED, send only the payment/limited-specific message
+            if "PRIVATE" in client_conn and client.status == BillingStatus.LIMITED:
+                message_text = (
+                    "⚠️ Connection is unstable. This may be due to LIMITED CONNECTION POLICY. "
+                    "Please settle your payment to restore full service."
+                )
+            else:
+                # Default composition for other clients (including VENDO and non-limited PRIVATE)
+                message_text = _compose_message(template_key, client.connection_name, False)
+
             try:
-                resp = send_message(client.messenger_id, msg)
+                resp = send_message(client.messenger_id, message_text)
                 status = resp.get("message_id", "failed")
             except Exception:
                 status = "failed"
+
             db.add(models.MessageLog(client_id=client.id, template_id=template.id,
                                      status=status))
             db.commit()
@@ -284,8 +313,10 @@ def notify_clients(db: Session, template_name: str, connection_name: str = None,
                 f"📩 Notified NON-ADMIN {client.name} ({client.connection_name}) with '{template_key}'")
 
         admins = base_query.filter(
-            models.Client.connection_name.ilike("%ADMIN%")).all()
+            models.Client.connection_name.ilike("%ADMIN%")
+        ).all()
         for client in admins:
+            # Admins receive composed messages as before
             msg = _compose_message(template_key, client.connection_name, True)
             try:
                 resp = send_message(client.messenger_id, msg)
@@ -300,6 +331,10 @@ def notify_clients(db: Session, template_name: str, connection_name: str = None,
 
         return
 
+    # ------------------------------------------------------------
+    # VENDO / PRIVATE specific handling
+    # (existing behavior retained; PRIVATE already skips UNPAID/CUTOFF here)
+    # ------------------------------------------------------------
     if metric in ("VENDO", "PRIVATE"):
         candidates = (
             db.query(models.Client)
