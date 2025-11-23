@@ -818,249 +818,240 @@ def poll_netwatch(
     ws_manager=None,
     group_name: str = None,
 ):
-    from sqlalchemy import or_
+  from sqlalchemy import or_
 
-    mikrotik = MikroTikClient(host, username, password)
+  mikrotik = MikroTikClient(host, username, password)
 
-    # initialize group status if not present
-    if group_name and group_name not in group_router_status:
-        group_router_status[group_name] = None
+  # initialize group status if not present
+  if group_name and group_name not in group_router_status:
+    group_router_status[group_name] = None
 
-    while True:
-        # First, check router connectivity using ensure_connection()
-        connected = False
-        try:
-            connected = mikrotik.ensure_connection()
-        except Exception as e:
-            logger.error(f"Error while checking connection to {host}: {e}")
-            connected = False
+  while True:
+    connected = False
+    db: Session = next(get_db())
+    try:
+      connected = mikrotik.ensure_connection()
+    except Exception as e:
+      logger.error(f"Error while checking connection to {host}: {e}")
+      connected = False
 
-        db: Session = next(get_db())
-        try:
-            # If router is unreachable, handle group-wide DOWN
-            if not connected:
-                prev = group_router_status.get(group_name)
-                # Only act if status changed or unknown -> DOWN
-                if prev != "DOWN":
-                    logger.warning(f"🚨 Mikrotik for group {group_name} ({host}) is unreachable. Marking PRIVATE/VENDO as DOWN and notifying group.")
+    try:
+      if not connected:
+        prev = group_router_status.get(group_name)
+        if prev != "DOWN":
+          logger.warning(
+            f"🚨 Mikrotik for group {group_name} ({host}) is unreachable. Marking PRIVATE/VENDO as DOWN and notifying group.")
 
-                    # Mark PRIVATE and VENDO clients as DOWN
-                    affected = (
-                        db.query(models.Client)
-                        .filter(
-                            models.Client.group_name == group_name,
-                            (
-                                models.Client.connection_name.ilike("%PRIVATE%")
-                                | models.Client.connection_name.ilike("%VENDO%")
-                            ),
-                        )
-                        .all()
-                    )
+          # Mark PRIVATE and VENDO clients as DOWN
+          affected = db.query(models.Client).filter(
+            models.Client.group_name == group_name,
+            or_(
+              models.Client.connection_name.ilike("%PRIVATE%"),
+              models.Client.connection_name.ilike("%VENDO%")
+            )
+          ).all()
 
-                    for c in affected:
-                        if c.state != "DOWN":
-                            c.state = "DOWN"
-                            db.add(c)
-                    db.commit()
+          for c in affected:
+            if c.state != "DOWN":
+              c.state = "DOWN"
+              db.add(c)
+          db.commit()
 
-                    # Send group-wide message to Admin + Private + Vendo in group
-                    recipients = (
-                        db.query(models.Client)
-                        .filter(
-                            models.Client.group_name == group_name,
-                            (
-                                models.Client.connection_name.ilike("%ADMIN%")
-                                | models.Client.connection_name.ilike("%PRIVATE%")
-                                | models.Client.connection_name.ilike("%VENDO%")
-                            )
-                        )
-                        .all()
-                    )
+          # Send group-wide message respecting billing rules
+          recipients = db.query(models.Client).filter(
+            models.Client.group_name == group_name,
+            or_(
+              models.Client.connection_name.ilike("%ADMIN%"),
+              models.Client.connection_name.ilike("%VENDO%"),
+              models.Client.connection_name.ilike("%PRIVATE%")
+            )
+          ).all()
 
-                    msg = GROUP_PROVIDER_DOWN_MSG.get(group_name, "⚠️ All Service Providers are down.")
-                    for r in recipients:
-                        try:
-                            send_message(r.messenger_id, msg)
-                        except Exception as e:
-                            logger.error(f"Failed to send group-down message to {r.name}: {e}")
+          for r in recipients:
+            conn_upper = (r.connection_name or "").upper()
+            # Skip PRIVATE UNPAID/CUTOFF
+            if "PRIVATE" in conn_upper and r.status in (BillingStatus.UNPAID,
+                                                        BillingStatus.CUTOFF):
+              logger.info(
+                f"⏭️ Skipping PRIVATE client {r.name} ({r.connection_name}) for provider DOWN notification (status={r.status})")
+              continue
 
-                    group_router_status[group_name] = "DOWN"
-                else:
-                    # status already DOWN, no repeated notify
-                    logger.debug(f"Group {group_name} already marked DOWN; skipping repeated group handling.")
-
-                # Skip per-rule polling while router not reachable
-                db.close()
-                time.sleep(interval)
-                continue
-
-            # Router is reachable
-            prev = group_router_status.get(group_name)
-            if prev == "DOWN":
-                # Transition DOWN -> UP: restore states and notify once
-                logger.info(f"🔺 Mikrotik for group {group_name} ({host}) recovered. Marking PRIVATE/VENDO as UP and notifying group.")
-
-                down_clients = (
-                    db.query(models.Client)
-                    .filter(
-                        models.Client.group_name == group_name,
-                        models.Client.state == "DOWN",
-                        (
-                            models.Client.connection_name.ilike("%PRIVATE%")
-                            | models.Client.connection_name.ilike("%VENDO%")
-                        )
-                    )
-                    .all()
-                )
-
-                for c in down_clients:
-                    c.state = "UP"
-                    db.add(c)
-                db.commit()
-
-                recipients = (
-                    db.query(models.Client)
-                    .filter(
-                        models.Client.group_name == group_name,
-                        (
-                            models.Client.connection_name.ilike("%ADMIN%")
-                            | models.Client.connection_name.ilike("%PRIVATE%")
-                            | models.Client.connection_name.ilike("%VENDO%")
-                        )
-                    )
-                    .all()
-                )
-
-                msg = GROUP_PROVIDER_UP_MSG.get(group_name, "✅ All Service Providers are restored.")
-                for r in recipients:
-                    try:
-                        send_message(r.messenger_id, msg)
-                    except Exception as e:
-                        logger.error(f"Failed to send group-up message to {r.name}: {e}")
-
-                group_router_status[group_name] = "UP"
+            # LIMITED clients get special message
+            if "PRIVATE" in conn_upper and r.status == BillingStatus.LIMITED:
+              msg = "⚠️ Connection is unstable. This may be due to LIMITED CONNECTION POLICY. Please settle your payment to restore full service."
             else:
-                # Nothing to do for group status transition; ensure it's set to UP
-                group_router_status[group_name] = "UP"
+              msg = GROUP_PROVIDER_DOWN_MSG.get(group_name,
+                                                "⚠️ All Service Providers are down.")
 
-            # Proceed with normal netwatch rules polling
-            rules = mikrotik.get_netwatch()
-            if not rules:
-                logger.warning(f"⚠️ No Netwatch rules found for {host}")
-                db.close()
-                time.sleep(interval)
-                continue
-
-            seen_connections = []
-
-            for rule in rules:
-                connection_name = rule.get("comment") or rule.get("host")
-                connection_name = (
-                    connection_name.replace("_", "-") if connection_name else connection_name
-                )
-                current_state = (rule.get("status") or "unknown").upper()
-                seen_connections.append(connection_name)
-
-                key = f"{connection_name}_{group_name}"
-                prev_state = last_state.get(key)
-                if current_state == "UNKNOWN":
-                    logger.debug(
-                        f"[{key}] Ignoring transient UNKNOWN (keeping {prev_state})")
-                    continue
-
-                if prev_state and prev_state != current_state:
-                    time.sleep(2)
-                    confirm = (rule.get("status") or current_state).upper()
-                    if confirm != current_state:
-                        logger.debug(f"[{key}] Ignored flicker {current_state} → {confirm}")
-                        continue
-
-                clients = (
-                    db.query(models.Client)
-                    .filter(
-                        or_(
-                            models.Client.connection_name == connection_name,
-                            models.Client.connection_name.ilike(f"{connection_name}%"),
-                            models.Client.connection_name.ilike(f"%{connection_name}%"),
-                        )
-                    )
-                    .all()
-                )
-
-                if not clients:
-                    logger.debug(f"No clients found for connection {connection_name}")
-                    continue
-
-                for i, client in enumerate(clients):
-                    effective_group = getattr(client, "group_name",
-                                              None) or group_name or "default"
-                    is_primary = i == 0
-                    process_rule(
-                        db,
-                        client,
-                        connection_name,
-                        current_state,
-                        effective_group,
-                        ws_manager,
-                        is_primary=is_primary,
-                    )
-
-                db.commit()
-
-            # Mark unmatched clients as UNKNOWN (unchanged)
-            all_clients = db.query(models.Client).filter(
-                models.Client.group_name == group_name
-            ).all()
-
-            def is_seen(client_name: str | None, seen_list: list[str | None]) -> bool:
-                if not client_name:
-                    return False
-                cname = client_name.lower()
-                for s in seen_list:
-                    if not s:
-                        continue
-                    s_lower = s.lower()
-                    if s_lower == cname or s_lower.startswith(cname):
-                        return True
-                return False
-
-            for client in all_clients:
-                if not is_seen(client.connection_name, seen_connections):
-                    if client.state != "UNKNOWN":
-                        logger.info(
-                            f"🔄 {client.connection_name} → UNKNOWN (not matched in Netwatch)"
-                        )
-                        process_rule(
-                            db, client, client.connection_name, "UNKNOWN", group_name,
-                            ws_manager
-                        )
-            db.commit()
-
-            # Cleanup stale states
-            active_keys = {f"{c.connection_name}_{group_name}" for c in all_clients}
-            stale_keys = [
-                key for key in list(last_state.keys()) if key not in active_keys
-            ]
-            if stale_keys:
-                for key in stale_keys:
-                    timers.pop(key, None)
-                    notified_state.pop(key, None)
-                    last_state.pop(key, None)
-                logger.info(
-                    f"🧹 Cleaned up {len(stale_keys)} stale state entr"
-                    f"{'y' if len(stale_keys) == 1 else 'ies'}."
-                )
-
-        except Exception as e:
-            db.rollback()
-            logger.error(f"❌ Error updating client states for {host}: {e}")
-        finally:
             try:
-                db.close()
-            except Exception:
-                pass
+              send_message(r.messenger_id, msg)
+            except Exception as e:
+              logger.error(
+                f"Failed to send group-down message to {r.name}: {e}")
 
+          group_router_status[group_name] = "DOWN"
+        else:
+          logger.debug(
+            f"Group {group_name} already marked DOWN; skipping repeated group handling.")
+        db.close()
         time.sleep(interval)
+        continue
+
+      # Router is reachable
+      prev = group_router_status.get(group_name)
+      if prev == "DOWN":
+        # Transition DOWN -> UP
+        logger.info(
+          f"🔺 Mikrotik for group {group_name} ({host}) recovered. Marking PRIVATE/VENDO as UP and notifying group.")
+
+        down_clients = db.query(models.Client).filter(
+          models.Client.group_name == group_name,
+          models.Client.state == "DOWN",
+          or_(
+            models.Client.connection_name.ilike("%PRIVATE%"),
+            models.Client.connection_name.ilike("%VENDO%")
+          )
+        ).all()
+
+        for c in down_clients:
+          c.state = "UP"
+          db.add(c)
+        db.commit()
+
+        recipients = db.query(models.Client).filter(
+          models.Client.group_name == group_name,
+          or_(
+            models.Client.connection_name.ilike("%ADMIN%"),
+            models.Client.connection_name.ilike("%VENDO%"),
+            models.Client.connection_name.ilike("%PRIVATE%")
+          )
+        ).all()
+
+        for r in recipients:
+          conn_upper = (r.connection_name or "").upper()
+          # Skip PRIVATE UNPAID/CUTOFF
+          if "PRIVATE" in conn_upper and r.status in (BillingStatus.UNPAID,
+                                                      BillingStatus.CUTOFF):
+            logger.info(
+              f"⏭️ Skipping PRIVATE client {r.name} ({r.connection_name}) for provider UP notification (status={r.status})")
+            continue
+
+          # LIMITED clients get special message
+          if "PRIVATE" in conn_upper and r.status == BillingStatus.LIMITED:
+            msg = "⚠️ Connection is unstable. This may be due to LIMITED CONNECTION POLICY. Please settle your payment to restore full service."
+          else:
+            msg = GROUP_PROVIDER_UP_MSG.get(group_name,
+                                            "✅ All Service Providers are restored.")
+
+          try:
+            send_message(r.messenger_id, msg)
+          except Exception as e:
+            logger.error(f"Failed to send group-up message to {r.name}: {e}")
+
+        group_router_status[group_name] = "UP"
+      else:
+        group_router_status[group_name] = "UP"
+
+      # Proceed with normal Netwatch rules
+      rules = mikrotik.get_netwatch()
+      if not rules:
+        logger.warning(f"⚠️ No Netwatch rules found for {host}")
+        db.close()
+        time.sleep(interval)
+        continue
+
+      seen_connections = []
+
+      for rule in rules:
+        connection_name = rule.get("comment") or rule.get("host")
+        connection_name = connection_name.replace("_",
+                                                  "-") if connection_name else connection_name
+        current_state = (rule.get("status") or "unknown").upper()
+        seen_connections.append(connection_name)
+
+        key = f"{connection_name}_{group_name}"
+        prev_state = last_state.get(key)
+        if current_state == "UNKNOWN":
+          logger.debug(
+            f"[{key}] Ignoring transient UNKNOWN (keeping {prev_state})")
+          continue
+
+        if prev_state and prev_state != current_state:
+          time.sleep(2)
+          confirm = (rule.get("status") or current_state).upper()
+          if confirm != current_state:
+            logger.debug(f"[{key}] Ignored flicker {current_state} → {confirm}")
+            continue
+
+        clients = db.query(models.Client).filter(
+          or_(
+            models.Client.connection_name == connection_name,
+            models.Client.connection_name.ilike(f"{connection_name}%"),
+            models.Client.connection_name.ilike(f"%{connection_name}%"),
+          )
+        ).all()
+
+        if not clients:
+          logger.debug(f"No clients found for connection {connection_name}")
+          continue
+
+        for i, client in enumerate(clients):
+          effective_group = getattr(client, "group_name",
+                                    None) or group_name or "default"
+          is_primary = i == 0
+          process_rule(
+            db,
+            client,
+            connection_name,
+            current_state,
+            effective_group,
+            ws_manager,
+            is_primary=is_primary,
+          )
+
+        db.commit()
+
+      # Mark unmatched clients as UNKNOWN
+      all_clients = db.query(models.Client).filter(
+        models.Client.group_name == group_name
+      ).all()
+
+      for client in all_clients:
+        if not client.connection_name:
+          continue
+        if not any(
+            client.connection_name.lower() == s.lower() or s.lower().startswith(
+                client.connection_name.lower()) for s in seen_connections if s):
+          if client.state != "UNKNOWN":
+            logger.info(
+              f"🔄 {client.connection_name} → UNKNOWN (not matched in Netwatch)")
+            process_rule(db, client, client.connection_name, "UNKNOWN",
+                         group_name, ws_manager)
+
+      db.commit()
+
+      # Cleanup stale states
+      active_keys = {f"{c.connection_name}_{group_name}" for c in all_clients}
+      stale_keys = [key for key in list(last_state.keys()) if
+                    key not in active_keys]
+      for key in stale_keys:
+        timers.pop(key, None)
+        notified_state.pop(key, None)
+        last_state.pop(key, None)
+      if stale_keys:
+        logger.info(
+          f"🧹 Cleaned up {len(stale_keys)} stale state entr{'y' if len(stale_keys) == 1 else 'ies'}.")
+
+    except Exception as e:
+      db.rollback()
+      logger.error(f"❌ Error updating client states for {host}: {e}")
+    finally:
+      try:
+        db.close()
+      except Exception:
+        pass
+
+    time.sleep(interval)
 
 
 def initialize_state_cache():
