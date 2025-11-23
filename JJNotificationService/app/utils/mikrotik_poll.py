@@ -262,6 +262,9 @@ def notify_clients(db: Session, template_name: str, connection_name: str = None,
         db.refresh(template)
         logger.info(f"🆕 Template '{template_key}' created with default content.")
 
+    # We'll track which client IDs were already sent the LIMITED message during this invocation
+    limited_notified_client_ids: set[int] = set()
+
     # ------------------------------------------------------------
     # If metric is a provider-level event (CONNECTION/PING/ISP*),
     # we notify non-admin and admin clients in the group — BUT
@@ -296,6 +299,7 @@ def notify_clients(db: Session, template_name: str, connection_name: str = None,
                     "⚠️ Connection is unstable. This may be due to LIMITED CONNECTION POLICY. "
                     "Please settle your payment to restore full service."
                 )
+                limited_notified_client_ids.add(int(getattr(client, "id", 0)))
             else:
                 # Default composition for other clients (including VENDO and non-limited PRIVATE)
                 message_text = _compose_message(template_key, client.connection_name, False)
@@ -359,6 +363,12 @@ def notify_clients(db: Session, template_name: str, connection_name: str = None,
               )
               continue
 
+            # --- Prevent redundant LIMITED message for this client within this invocation ---
+            if int(getattr(client, "id", 0)) in limited_notified_client_ids:
+              logger.debug(
+                f"Skipping already-sent LIMITED message for client {client.id}")
+              continue
+
             if is_spike:
                 if metric == "PRIVATE":
                     if client.status == BillingStatus.LIMITED:
@@ -366,6 +376,8 @@ def notify_clients(db: Session, template_name: str, connection_name: str = None,
                             "⚠️ Connection is unstable. This may be due to LIMITED CONNECTION POLICY. "
                             "Please settle your payment to restore full service."
                         )
+                        limited_notified_client_ids.add(
+                          int(getattr(client, "id", 0)))
                     else:
                         message_text = (
                             "⚠️ Your connection is unstable. Kindly check the cables and indicator lights. "
