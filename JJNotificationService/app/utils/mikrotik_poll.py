@@ -78,8 +78,8 @@ GROUP_LOCATION = {"G1": "MALUNGON", "G2": "SURALLAH"}
 
 # Group-specific provider down/up messages
 GROUP_PROVIDER_DOWN_MSG = {
-    "G1": "⚠️ All Internet Service Providers are down.",
-    "G2": "⚠️ PLDT Provider is down.",
+    "G1": "❗ All Internet Service Providers are down. It may be due to a brownout or device issue. Please wait.",
+    "G2": "❗ PLDT Provider is down. It may be due to a brownout or device issue. Please wait.",
 }
 GROUP_PROVIDER_UP_MSG = {
     "G1": "✅ All Internet Service Providers are restored.",
@@ -221,17 +221,16 @@ def _compose_message(template_name: str, client_conn_name: str | None,
             else:
                 base = "⚠️ Service is slow and unstable or experiencing latency."
 
-    if metric in ("CONNECTION", "PING", "ISP1") and event == "DOWN" and group == "G1":
-        base = f"{base} Switching to Secondary Service Provider to maintain stable connectivity."
+    if isp_token == "ISP1" and event == "DOWN" and group == "G1":
+      base = f"{base} Switching to Secondary Service Provider to maintain stable connectivity."
 
-    if (metric in ("PING", "ISP2") and event == "DOWN" and group == "G1") and metric in ("PING", "ISP1") and event == "UP" and group == "G1":
-        base = f"{base} Primary Internet Service Provider will now handle all network traffic. You may experience slower internet connectivity at this time."
+    elif isp_token == "ISP2" and event == "DOWN" and group == "G1":
+      base = f"{base} Primary Service Provider will now carry all the load. Expect slower connectivity."
 
-    if metric in ("CONNECTION", "PING", "ISP1") and event == "UP" and group == "G1":
-        base = f"{base} Switching back to Primary Service Provider to maintain performance connectivity."
+    elif isp_token == "ISP1" and isp_token == "ISP2" and event == "DOWN" and group == "G1":
+      base = "⚠️ All Internet Service Providers are slow and unstable. Please wait for the restoration."
 
-    if metric in ("CONNECTION", "PING") and location_suffix:
-        base = f"{base} - {location_suffix}"
+    base = f"{base} - {location_suffix}"
 
     return base
 
