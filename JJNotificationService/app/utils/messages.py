@@ -26,6 +26,25 @@ Best regards,
 JJ Internet Service
 """
 
+THROTTLE_NOTICE_TEMPLATE_TAGALOG = """\
+NOTICE OF THROTTLE
+
+Mahal na Kliyente,
+
+Nais po naming ipaalam na ngayong araw ay ika-4 na araw na ng inyong hindi nabayarang balanse.
+
+Alinsunod sa aming patakaran, ang inyong internet connection ay maaaaring ma-throttle sa loob ng 1 oras** kung hindi pa rin makatanggap ng bayad.
+
+Hinihikayat po namin kayong agarang mag-settle ng inyong account upang maiwasan ang pagbaba ng internet speed.
+Paki-send po ang inyong proof of payment sa aming official page o contact number para sa beripikasyon.
+
+Kung nakapagbayad na po kayo, ang restoration ay matatapos sa loob ng 5–10 minuto.
+
+Maraming salamat po sa inyong kooperasyon at patuloy na pagtitiwala.
+
+JJ Internet Service
+"""
+
 DISCONNECTION_NOTICE_TEMPLATE = """\
 NOTICE OF SERVICE DISCONNECTION
 
@@ -45,7 +64,51 @@ Sincerely,
 JJ Internet Service
 """
 
+DISCONNECTION_NOTICE_TEMPLATE_TAGALOG = """\
+NOTICE OF SERVICE DISCONNECTION
+
+Mahal na Kliyente,
+
+Ipinapaalam po namin na ang inyong account ay 7 araw nang hindi nababayaran.
+
+Alinsunod sa aming patakaran, kung hindi pa rin maisasagawa ang bayad, ang inyong internet connection ay maaaaring ma-disconnect sa loob ng 1 oras.
+
+Hinihikayat po namin kayong agad na mag-settle ng inyong bayad upang maiwasan ang ganap na pagkaputol ng serbisyo.
+Paki-send po ang inyong proof of payment sa aming official page o contact number para sa kumpirmasyon.
+
+Kung nakapagbayad na po kayo, ang restoration ay matatapos sa loob ng 5–10 minuto.
+
+Lubos po naming pinahahalagahan ang inyong maagap na aksyon sa usaping ito.
+
+JJ Internet Service
+"""
+
 DUE_NOTICE_TEMPLATE = """\
+Good day {client_display}!
+
+This is a friendly reminder that your internet account payment is due on {due_date}, amounting to {amount:,.2f} pesos only.
+
+Please note the following:
+
+If payment is not received within 4 days, your connection may be throttled, resulting in slower internet speeds.
+
+If payment remains unpaid after 7 days, your internet service will be disconnected. Once payment is made, your connection will be restored.
+
+If you have already made the payment, kindly disregard this message.
+
+Payment Options:
+📱 GCash
+• Number: 09272613343
+• Name: John Rexcy Velez
+Note: Please send me a screenshot of your GCash transaction for us to verify.
+
+🏡 Cash Payment
+You may also pay in person at {payment_location}.
+
+Thank you from JJ Internet Service.
+"""
+
+DUE_NOTICE_TEMPLATE_TAGALOG = """\
 Good day {client_display}!
 
 This is a friendly reminder that your internet account payment is due on {due_date}, amounting to {amount:,.2f} pesos only.
@@ -180,9 +243,9 @@ def get_messages(group_name: str, connect_name: str = None):
 
     # 👥 CLIENT messages (PRIVATE, vendo, etc.)
     return {
-        "THROTTLE_NOTICE": THROTTLE_NOTICE_TEMPLATE,
-        "DISCONNECTION_NOTICE": DISCONNECTION_NOTICE_TEMPLATE,
-        "DUE_NOTICE": DUE_NOTICE_TEMPLATE,
+        "THROTTLE_NOTICE": THROTTLE_NOTICE_TEMPLATE_TAGALOG,
+        "DISCONNECTION_NOTICE": DISCONNECTION_NOTICE_TEMPLATE_TAGALOG,
+        "DUE_NOTICE": DUE_NOTICE_TEMPLATE_TAGALOG,
         "SPIKE_NOTICE": SPIKE_NOTICE_TEMPLATE,
         "PAYMENT_LOCATION": payment_location,
     }
