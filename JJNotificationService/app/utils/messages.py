@@ -84,28 +84,30 @@ JJ Internet Service
 """
 
 DUE_NOTICE_TEMPLATE = """\
-Good day {client_display}!
+Magandang araw, {client_display}!
 
-This is a friendly reminder that your internet account payment is due on {due_date}, amounting to {amount:,.2f} pesos only.
+Pinaaalalahanan po namin kayo na ang inyong bayad para sa internet account ay nakatakdang mag-due sa {due_date}, na may halagang {amount:,.2f} pesos.
 
-Please note the following:
+Mahalagang Paalala:
 
-If payment is not received within 4 days, your connection may be throttled, resulting in slower internet speeds.
+• Kung hindi po matanggap ang bayad sa loob ng 4 na araw, ang inyong koneksyon ay maaaring ma-throttle at makaranas ng mabagal na internet speed.
 
-If payment remains unpaid after 7 days, your internet service will be disconnected. Once payment is made, your connection will be restored.
+• Kapag nanatiling hindi nababayaran pagkalipas ng 7 araw, ang inyong internet service ay ma-di-disconnect. Ang koneksyon ay ibabalik pagkatapos maisagawa ang bayad.
 
-If you have already made the payment, kindly disregard this message.
+• Kung nakapagbayad na po kayo, maaari n’yo nang balewalain ang mensaheng ito.
 
-Payment Options:
+Paraan ng Pagbabayad:
+
 📱 GCash
 • Number: 09272613343
 • Name: John Rexcy Velez
-Note: Please send me a screenshot of your GCash transaction for us to verify.
+Paki-send po ang screenshot ng inyong GCash transaction para sa beripikasyon.
 
 🏡 Cash Payment
-You may also pay in person at {payment_location}.
+Maaari rin po kayong magbayad nang personal sa {payment_location}.
 
-Thank you from JJ Internet Service.
+Maraming salamat po.
+JJ Internet Service
 """
 
 DUE_NOTICE_TEMPLATE_TAGALOG = """\
