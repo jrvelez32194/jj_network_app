@@ -15,8 +15,8 @@ docker save -o jjnotificationapp.tar jjnotificationapp:arm
 
 3. Copy to Orange Pi
 scp jjnotificationservice.tar jjnotificationapp.tar root@192.168.4.36:/root/jjnet/
-scp jjnotificationservice.tar root@192.168.4.36:/root/jjnet/
-scp jjnotificationapp.tar root@192.168.4.36:/root/jjnet/
+scp jjnotificationservice.tar root@192.168.4.36:/root/jjnet/  if remote--> scp jjnotificationservice.tar root@10.147.18.202:/root/jjnet/
+scp jjnotificationapp.tar root@192.168.4.36:/root/jjnet/ if remote-->  scp jjnotificationapp.tar root@10.147.18.202:/root/jjnet/ 
 
 4. Load images on Orange Pi
 
