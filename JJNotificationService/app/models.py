@@ -28,6 +28,12 @@ class BillingStatus(str, enum.Enum):
     LIMITED = "LIMITED"
     CUTOFF = "CUTOFF"
 
+# ------------------------------
+# 🚀 Connection Name enum
+# ------------------------------
+class ConnectionName(str, enum.Enum):
+  VENDO = "VENDO"
+  PRIVATE = "PRIVATE"
 
 # ===============================
 # 🚀 Clients
