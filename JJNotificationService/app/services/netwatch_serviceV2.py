@@ -1,22 +1,19 @@
-import time
-import threading
+import asyncio
 import logging
 import os
 import json
-from sqlalchemy.orm import Session
-from app.database import SessionLocal, get_db
-from app import models
-from app.models import BillingStatus
-from app.utils.messenger import send_message
+import time
 from app.utils.mikrotik_config import MikroTikClient
 
-logger = logging.getLogger("netwatch poll")
+logger = logging.getLogger("netwatch_async")
 logger.setLevel(logging.INFO)
 
-# Track per-group router status to avoid repeated group messages
-# Values: "UP" | "DOWN" | None (unknown)
-group_router_status: dict[str, str] = {}
+# Track per-router overall state (optional)
+group_router_status: dict[str, str | None] = {}
 
+# Track per-rule state
+# Key: "{group}_{rule_comment}"
+rule_router_status: dict[str, str | None] = {}
 
 # ============================================================
 # 🔧 Router mapping (configurable via environment variable)
@@ -34,59 +31,91 @@ except json.JSONDecodeError:
     logger.warning("⚠️ Invalid ROUTER_MAP_JSON format, using defaults.")
 
 
-def net_watch_poll(    host: str,
+# ============================================================
+# 🔄 Single-thread async loop for all routers
+# ============================================================
+async def netwatch_async_loop(
     username: str,
     password: str,
     interval: int = 30,
     ws_manager=None,
-    group_name: str = None):
-
-    from sqlalchemy import or_
-
-    mikrotik = MikroTikClient(host, username, password)
-
-    # initialize group status if not present
-    if group_name and group_name not in group_router_status:
-      group_router_status[group_name] = None
-
-    connected = False
-
-    db: Session = next(get_db())
-    try:
-      connected = mikrotik.ensure_connection()
-    except Exception as e:
-      logger.error(f"Error while checking connection to {host}: {e}")
-      connected = False
-
-
-    # Proceed with normal Netwatch rules
-    rules = mikrotik.get_netwatch()
-    if not rules:
-      logger.warning(f"⚠️ No Netwatch rules found for {host}")
-      db.close()
-      time.sleep(interval)
-      continue
-
-
-
-# ============================================================
-# Start polling threads per router group
-# ============================================================
-def start_polling(username: str, password: str, interval: int = 30,
-    ws_manager=None, router_map=None):
+    router_map: dict[str, str] | None = None,
+):
+    """
+    Polls all routers for Netwatch rules in a single async loop.
+    Pushes state changes via WebSocket if ws_manager is provided.
+    """
     routers = router_map or ROUTER_MAP
 
-    initialize_state_cache()
+    # Create MikroTik clients once
+    clients: dict[str, MikroTikClient] = {
+        group: MikroTikClient(host, username, password)
+        for group, host in routers.items()
+    }
 
-    for group_name, host in routers.items():
-        # initialize group_router_status
+    # Initialize per-router and per-rule state
+    for group_name in routers:
         group_router_status.setdefault(group_name, None)
+        try:
+            client = clients[group_name]
+            rules = client.get_netwatch() or []
+            for rule in rules:
+                rule_comment = rule.get("comment")
+                if rule_comment:
+                    key = f"{group_name}_{rule_comment}"
+                    rule_router_status.setdefault(key, None)
+        except Exception as e:
+            logger.warning(f"[{group_name}] Failed to initialize rule states: {e}")
 
-        thread = threading.Thread(
-            target=poll_netwatch,
-            args=(host, username, password, interval, ws_manager, group_name),
-            daemon=True,
+    logger.info("🚀 Netwatch async loop started (per-rule tracking)")
+
+    while True:
+        for group_name, client in clients.items():
+            try:
+                # Ensure connection to router
+                if not client.ensure_connection():
+                    raise Exception("Unable to connect to router")
+
+                rules = client.get_netwatch() or []
+
+                for rule in rules:
+                    rule_comment = rule.get("comment")
+                    if not rule_comment:
+                        continue
+
+                    key = f"{group_name}_{rule_comment}"
+                    status = rule.get("status")
+                    router_state = "DOWN" if status == "down" else "UP"
+
+                    previous_state = rule_router_status.get(key)
+
+                    # Only act on state change
+                    if router_state != previous_state:
+                        rule_router_status[key] = router_state
+
+                        logger.info(
+                            f"[{group_name}] {rule_comment}: {previous_state} → {router_state}"
+                        )
+
+            except Exception as e:
+                logger.error(f"[{group_name}] Netwatch error: {e}")
+
+        # Sleep asynchronously between polls
+        await asyncio.sleep(interval)
+
+
+# ============================================================
+# 🔹 Start polling helper (replaces old thread-based start_polling)
+# ============================================================
+def start_polling(username: str, password: str, interval: int = 30, ws_manager=None, router_map=None):
+    asyncio.create_task(
+        netwatch_async_loop(
+            username=username,
+            password=password,
+            interval=interval,
+            ws_manager=ws_manager,
+            router_map=router_map
         )
-        thread.start()
-        logger.info(
-            f"✅ Started Netwatch polling for group '{group_name}' at {host}")
+    )
+    routers = router_map or ROUTER_MAP
+    logger.info(f"✅ Netwatch async polling started for {len(routers)} routers")

@@ -6,7 +6,7 @@ from datetime import datetime
 import pytz
 from apscheduler.schedulers.background import BackgroundScheduler
 from dotenv import load_dotenv
-from app.utils.mikrotik_poll import start_polling, ROUTER_MAP
+from app.services.netwatch_serviceV2 import start_polling, ROUTER_MAP
 from app.websocket_manager import manager
 from app.services.billing_service import BillingService
 from app.utils.mikrotik_config import MikroTikClient
