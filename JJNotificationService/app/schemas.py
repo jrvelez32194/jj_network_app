@@ -11,6 +11,8 @@ class ConnectionState(str, Enum):
     DOWN = "DOWN"
     UNKNOWN = "UNKNOWN"
     SPIKING = "SPIKING"
+    SPIKE = "SPIKE"
+
 
 # ------------------------------
 # 🚀 Billing status enum
