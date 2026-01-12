@@ -83,7 +83,7 @@ Lubos po naming pinahahalagahan ang inyong maagap na aksyon sa usaping ito.
 JJ Internet Service
 """
 
-DUE_NOTICE_TEMPLATE = """\
+DUE_NOTICE_TEMPLATE_TAGALOG = """\
 Magandang araw, {client_display}!
 
 Pinaaalalahanan po namin kayo na ang inyong bayad para sa internet account ay nakatakdang mag-due sa {due_date}, na may halagang {amount:,.2f} pesos.
@@ -110,7 +110,7 @@ Maraming salamat po.
 JJ Internet Service
 """
 
-DUE_NOTICE_TEMPLATE_TAGALOG = """\
+DUE_NOTICE_TEMPLATE = """\
 Good day {client_display}!
 
 This is a friendly reminder that your internet account payment is due on {due_date}, amounting to {amount:,.2f} pesos only.
