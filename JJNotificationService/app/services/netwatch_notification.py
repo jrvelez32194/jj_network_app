@@ -240,6 +240,8 @@ def dispatch_notification(
         return
 
     if prefix in {PRIVATE_KEYWORD, VENDO_KEYWORD} and client:
+        if prefix == PRIVATE_KEYWORD:
+          content = content.replace("Your", f"Your {client.connection_name}")
         enqueue_message(client, content, group)
         notify_admin_deduped(db, content, group, client.connection_name, prefix, client.state)
         return
