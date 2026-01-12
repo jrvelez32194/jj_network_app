@@ -2,6 +2,27 @@ from sqlalchemy.orm import Session
 from app.models import Client
 from app.services.websocket_service import broadcast_state_change
 
+UNKNOWN_STATE = "UNKNOWN"
+
+
+def get_clients(db: Session, group_name: str) -> list[Client]:
+    return db.query(Client).filter(Client.group_name == group_name).all()
+
+
+def get_clients_by_state(
+    db: Session,
+    group_name: str,
+    state: str,
+) -> list[Client]:
+    return (
+        db.query(Client)
+        .filter(
+            Client.group_name == group_name,
+            Client.state == state,
+        )
+        .all()
+    )
+
 
 def update_client_status(
     db: Session,
@@ -13,16 +34,10 @@ def update_client_status(
     if not group:
         raise ValueError("group is required")
 
-    clients = (
-        db.query(Client)
-        .filter(Client.group_name == group)
-        .all()
-    )
-
+    clients = get_clients(db, group)
     if not clients:
         return []
 
-    # Normalize rule keys once
     normalized_rules = {
         key.lower(): value
         for key, value in rule_states.items()
@@ -32,22 +47,25 @@ def update_client_status(
     changed_clients: list[Client] = []
 
     for client in clients:
+        if not client.connection_name:
+            continue
+
         prev_state = client.state
         client_key = client.connection_name.lower()
 
-        # Determine new state
-        if client_key in normalized_rules:
-            new_state = normalized_rules[client_key]
-        else:
-            new_state = "UNKNOWN"
+        new_state = normalized_rules.get(
+            client_key,
+            UNKNOWN_STATE,
+        )
 
-        # Apply only if changed
-        if prev_state != new_state:
-            client.state = new_state
-            db.add(client)
+        if prev_state == new_state:
+            continue
 
-            changed_clients.append(client)
+        client.state = new_state
+        db.add(client)
+        changed_clients.append(client)
 
+        if ws_manager:
             broadcast_state_change(
                 ws_manager,
                 client,
@@ -55,5 +73,51 @@ def update_client_status(
                 new_state,
             )
 
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+    return changed_clients
+
+
+def update_client_under_route_state(
+    db: Session,
+    group: str,
+    state: str,
+    ws_manager=None,
+) -> list[Client]:
+
+    if not group:
+        raise ValueError("group is required")
+
+    clients = get_clients(db, group)
+    if not clients:
+        return []
+
+    changed_clients: list[Client] = []
+
+    for client in clients:
+        if client.state == state:
+            continue
+
+        client.state = state
+        db.add(client)
+        changed_clients.append(client)
+
+        if ws_manager:
+            broadcast_state_change(
+                ws_manager,
+                client,
+                client.connection_name,
+                state,
+            )
+
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
     return changed_clients
