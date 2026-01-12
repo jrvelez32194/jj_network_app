@@ -18,6 +18,8 @@ def get_clients_by_state(
         db.query(Client)
         .filter(
             Client.group_name == group_name,
+            Client.connection_name.isnot(None),
+            Client.connection_name != "",
             Client.state == state,
         )
         .all()

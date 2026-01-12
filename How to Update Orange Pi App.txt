@@ -13,10 +13,15 @@ This rebuilds both frontend & backend images for ARM.
 docker save -o jjnotificationservice.tar jjnotificationservice:arm
 docker save -o jjnotificationapp.tar jjnotificationapp:arm
 
-3. Copy to Orange Pi
-scp jjnotificationservice.tar jjnotificationapp.tar root@192.168.4.36:/root/jjnet/  if remote-->  scp jjnotificationservice.tar jjnotificationapp.tar root@10.147.18.202:/root/jjnet/
-scp jjnotificationservice.tar root@192.168.4.36:/root/jjnet/  if remote--> scp jjnotificationservice.tar root@10.147.18.202:/root/jjnet/
-scp jjnotificationapp.tar root@192.168.4.36:/root/jjnet/ if remote-->  scp jjnotificationapp.tar root@10.147.18.202:/root/jjnet/ 
+3. Copy to Orange Pi local
+scp jjnotificationservice.tar jjnotificationapp.tar root@192.168.4.36:/root/jjnet/
+scp jjnotificationservice.tar root@192.168.4.36:/root/jjnet/
+scp jjnotificationapp.tar root@192.168.4.36:/root/jjnet/
+
+3.1 Copy to Orange Pi remote
+scp jjnotificationservice.tar jjnotificationapp.tar root@10.147.18.202:/root/jjnet/
+scp jjnotificationservice.tar root@10.147.18.202:/root/jjnet/
+scp jjnotificationapp.tar root@10.147.18.202:/root/jjnet/ 
 
 4. Load images on Orange Pi
 
