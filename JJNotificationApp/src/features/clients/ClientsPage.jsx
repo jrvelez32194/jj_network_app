@@ -128,6 +128,9 @@ const ClientsPage = () => {
       const otherTerms = terms.filter((term) => !groupTerms.includes(term));
 
       result = result.filter((c) => {
+        const billingDate = c.billing_date
+          ? new Date(c.billing_date).toISOString().split("T")[0].toLowerCase()
+          : "";
         const id = c.id?.toString().toLowerCase() || "";
         const name = c.name?.toLowerCase() || "";
         const messenger_id = c.messenger_id?.toLowerCase() || "";
@@ -146,7 +149,8 @@ const ClientsPage = () => {
               messenger_id.includes(term) ||
               connection_name.includes(term) ||
               state.includes(term) ||
-              status.includes(term)
+              status.includes(term) ||
+              billingDate.includes(term)
           );
         }
 
@@ -158,7 +162,8 @@ const ClientsPage = () => {
             connection_name.includes(term) ||
             group_name.includes(term) ||
             state.includes(term) ||
-            status.includes(term)
+            status.includes(term) ||
+            billingDate.includes(term)
         );
       });
     }

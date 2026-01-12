@@ -35,12 +35,9 @@ const ClientTable = ({
             </th>
             <th className="px-6 py-3">ID</th>
             <th className="px-6 py-3">Name</th>
-            <th className="px-6 py-3">Messenger ID</th>
-            <th className="px-6 py-3">Group</th>
             <th className="px-6 py-3">Connection</th>
             <th className="px-6 py-3">State</th>
             <th className="px-6 py-3">Status</th>
-            <th className="px-6 py-3">Speed</th>
             <th className="px-6 py-3">Billing Date</th>
             <th className="px-6 py-3">Monthly Fee</th>
             <th className="px-6 py-3 min-w-[180px]">Actions</th>
@@ -73,15 +70,10 @@ const ClientTable = ({
                 </td>
                 <td className="px-6 py-4">{client.id}</td>
                 <td className="px-6 py-4">{client.name}</td>
-                <td className="px-6 py-4">{client.messenger_id}</td>
-                <td className="px-6 py-4">{client.group_name || "G1"}</td>
                 <td className="px-6 py-4">{client.connection_name || "—"}</td>
                 <td className="px-6 py-4">{renderStatus(client.state)}</td>
                 <td className="px-6 py-4">
                   {renderBillingStatus(client.status)}
-                </td>
-                <td className="px-6 py-4">
-                  {client.speed_limit || "unlimited"}
                 </td>
                 <td className="px-6 py-4">{formatDate(client.billing_date)}</td>
                 <td className="px-6 py-4">
