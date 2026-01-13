@@ -28,8 +28,8 @@ scp jjnotificationapp.tar root@10.147.18.202:/root/jjnet/
 On the Orange Pi, run:
 
 cd ~/jjnet
-docker image prune -f
 docker compose down
+docker image prune -f
 docker load -i jjnotificationservice.tar
 docker load -i jjnotificationapp.tar
 

@@ -1,26 +1,26 @@
-import asyncio
+import time
 import logging
 import os
 import json
 import traceback
-from typing import Dict
+from typing import Dict, Optional
 
 from sqlalchemy.orm import Session
-
-from app.database import SessionLocal
-from app.models import ConnectionState
+from app.database import get_db
+from app.models import  ConnectionState
 from app.services.client_service import (
     update_client_status,
     update_client_under_route_state,
+    get_clients,
 )
 from app.services.netwatch_notification import send_notification
 from app.utils.mikrotik_config import MikroTikClient
 
-logger = logging.getLogger("netwatch_async")
+logger = logging.getLogger("netwatch_sync")
 logger.setLevel(logging.INFO)
 
 # ============================================================
-# 🔧 Router mapping (configurable via environment variable)
+# Router mapping
 # ============================================================
 DEFAULT_ROUTER_MAP = {
     "G1": "192.168.4.1",
@@ -31,108 +31,116 @@ group_router_status: Dict[str, ConnectionState] = {}
 
 try:
     ROUTER_MAP = json.loads(os.getenv("ROUTER_MAP_JSON", "{}")) or DEFAULT_ROUTER_MAP
-    logger.info(f"✅ Loaded router map: {ROUTER_MAP}")
+    logger.info("✅ Loaded router map: %s", ROUTER_MAP)
 except json.JSONDecodeError:
     ROUTER_MAP = DEFAULT_ROUTER_MAP
-    logger.warning("⚠️ Invalid ROUTER_MAP_JSON format, using defaults.")
+    logger.warning("⚠️ Invalid ROUTER_MAP_JSON, using defaults")
 
 
 # ============================================================
-# 🔄 Async Netwatch polling loop
+# Synchronous polling loop
 # ============================================================
-async def netwatch_async_loop(
+def netwatch_sync_loop(
     username: str,
     password: str,
     interval: int = 30,
     ws_manager=None,
-    router_map: dict[str, str] | None = None,
+    router_map: Optional[Dict[str, str]] = None,
 ):
     routers = router_map or ROUTER_MAP
 
-    # Create MikroTik clients once
-    mikrotik_clients: dict[str, MikroTikClient] = {
-        group: MikroTikClient(host, username, password)
-        for group, host in routers.items()
-    }
+    # Initialize MikroTik clients
+    mikrotik_clients: Dict[str, MikroTikClient] = {}
+    for group, host in routers.items():
+        try:
+            mikrotik_clients[group] = MikroTikClient(host, username, password)
+            logger.info("[%s] MikroTik initialized (%s)", group, host)
+        except Exception as e:
+            logger.error("[%s] MikroTik init failed: %s", group, e)
 
-    logger.info("🚀 Netwatch async loop started")
+    logger.info("🚀 Netwatch sync loop started")
 
     while True:
         for group_name, mt_client in mikrotik_clients.items():
             db: Session | None = None
-
             try:
-                db = SessionLocal()
+                db = next(get_db())  # Use sync session
 
-                # ------------------------------------------------
-                # Router unreachable
-                # ------------------------------------------------
+                logger.debug("[%s] Poll cycle start", group_name)
+
+                # ====================================================
+                # Router DOWN
+                # ====================================================
                 if not mt_client.ensure_connection():
                     prev_state = group_router_status.get(group_name)
-
                     if prev_state != ConnectionState.DOWN:
                         logger.warning(
-                            f"🚨 Mikrotik for group {group_name} ({mt_client.host}) unreachable. "
-                            f"Marking PRIVATE/VENDO as DOWN and notifying group."
+                            "[%s] Router unreachable (%s) → marking clients DOWN",
+                            group_name,
+                            mt_client.host,
                         )
 
-                        clients = update_client_under_route_state(
+                        update_client_under_route_state(
                             db=db,
                             group=group_name,
                             state=ConnectionState.DOWN,
                             ws_manager=ws_manager,
                         )
 
+                        clients = get_clients(db, group_name)
                         send_notification(
-                            db,
-                            clients,
+                            db=db,
+                            clients=clients,
                             is_router_down=True,
                             router_group=group_name,
                         )
 
                         group_router_status[group_name] = ConnectionState.DOWN
                     else:
-                        logger.debug(
-                            f"[{group_name}] Router already DOWN, skipping duplicate handling."
-                        )
+                        logger.debug("[%s] Router still DOWN", group_name)
+                    continue
 
-                    continue  # move to next router
+                # ====================================================
+                # Router RECOVERED
+                # ====================================================
+                if group_router_status.get(group_name) == ConnectionState.DOWN:
+                    logger.info("[%s] Router recovered (%s)", group_name, mt_client.host)
 
-                # ------------------------------------------------
-                # Router recovered
-                # ------------------------------------------------
-                prev_state = group_router_status.get(group_name)
-                if prev_state == ConnectionState.DOWN:
-                    logger.info(
-                        f"🔺 Mikrotik for group {group_name} ({mt_client.host}) recovered."
+                    update_client_under_route_state(
+                        db=db,
+                        group=group_name,
+                        state=ConnectionState.UP,
+                        ws_manager=ws_manager,
                     )
+
+                    clients = get_clients(db, group_name)
+                    send_notification(
+                        db=db,
+                        clients=clients,
+                        is_router_down=False,
+                        router_group=group_name,
+                    )
+
                     group_router_status[group_name] = ConnectionState.UP
 
-                # ------------------------------------------------
-                # Normal Netwatch processing
-                # ------------------------------------------------
+                # ====================================================
+                # Netwatch rule processing
+                # ====================================================
                 rules = mt_client.get_netwatch() or []
-
-                rule_states: dict[str, str] = {}
+                rule_states: Dict[str, ConnectionState] = {}
 
                 for rule in rules:
-                    connection_name = rule.get("comment") or rule.get("host")
-                    if not connection_name:
+                    name = rule.get("comment") or rule.get("host")
+                    if not name:
                         continue
+                    name = name.replace("_", "-")
+                    raw = (rule.get("status") or "unknown").lower()
+                    state = {"up": ConnectionState.UP, "down": ConnectionState.DOWN}.get(
+                        raw, ConnectionState.UNKNOWN
+                    )
+                    rule_states[name] = state
 
-                    connection_name = connection_name.replace("_", "-")
-                    raw_status = (rule.get("status") or "unknown").lower()
-
-                    if raw_status == "up":
-                        state = ConnectionState.UP
-                    elif raw_status == "down":
-                        state = ConnectionState.DOWN
-                    else:
-                        state = ConnectionState.UNKNOWN
-
-                    rule_states[connection_name] = state
-
-                clients = update_client_status(
+                changed_clients = update_client_status(
                     db=db,
                     group=group_name,
                     rule_states=rule_states,
@@ -140,43 +148,48 @@ async def netwatch_async_loop(
                 )
 
                 send_notification(
-                    db,
-                    clients,
+                    db=db,
+                    clients=changed_clients,
                     is_router_down=False,
                     router_group=group_name,
                 )
 
             except Exception as e:
                 logger.error(
-                    f"[{group_name}] Netwatch error: {e}\n{traceback.format_exc()}"
+                    "[%s] Netwatch error: %s\n%s",
+                    group_name,
+                    e,
+                    traceback.format_exc(),
                 )
 
             finally:
                 if db:
                     db.close()
 
-        await asyncio.sleep(interval)
+        time.sleep(interval)
 
 
 # ============================================================
-# 🔹 Start polling helper
+# Start helper
 # ============================================================
 def start_polling(
     username: str,
     password: str,
     interval: int = 30,
     ws_manager=None,
-    router_map=None,
+    router_map: Optional[Dict[str, str]] = None,
 ):
-    asyncio.create_task(
-        netwatch_async_loop(
-            username=username,
-            password=password,
-            interval=interval,
-            ws_manager=ws_manager,
-            router_map=router_map,
-        )
-    )
+    import threading
+    threading.Thread(
+        target=netwatch_sync_loop,
+        args=(username, password, interval, ws_manager, router_map),
+        daemon=True,
+        name="netwatch-sync-worker",
+    ).start()
 
     routers = router_map or ROUTER_MAP
-    logger.info(f"✅ Netwatch async polling started for {len(routers)} routers")
+    logger.info(
+        "✅ Netwatch polling started for %d routers: %s",
+        len(routers),
+        list(routers.keys()),
+    )

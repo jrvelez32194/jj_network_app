@@ -58,6 +58,21 @@ class Client(Base):
     # 🔥 Single recurring billing date
     billing_date = Column(Date, nullable=True, default=date.today)  # replaced day+month+year
 
+# ===============================
+# 🚀 Client State history
+# ===============================
+class ClientStateHistory(Base):
+  __tablename__ = "client_state_history"
+
+  id = Column(Integer, primary_key=True)
+  client_id = Column(Integer, ForeignKey("clients.id"), index=True)
+
+  prev_state = Column(String, nullable=False)
+  new_state = Column(String, nullable=False)
+  reason = Column(String, nullable=True)
+
+  created_at = Column(DateTime, server_default=func.now(), index=True)
+
 
 # ===============================
 # 🚀 Templates
