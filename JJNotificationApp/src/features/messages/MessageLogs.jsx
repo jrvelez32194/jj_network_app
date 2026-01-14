@@ -66,25 +66,20 @@ export default function MessageLogs() {
 
   // ✅ Filtered logs
   const filteredLogs = useMemo(() => {
+    const term = searchTerm.toLowerCase();
     return logs.filter((log) => {
-      const matchesSearch =
+      return (
         !searchTerm ||
-        log.client?.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        log.template?.title?.toLowerCase().includes(searchTerm.toLowerCase());
-      return matchesSearch;
+        log.title?.toLowerCase().includes(term) ||
+        log.message?.toLowerCase().includes(term) ||
+        log.status?.toLowerCase().includes(term)
+      );
     });
   }, [logs, searchTerm]);
 
   // ✅ Pagination
   const [currentPage, setCurrentPage] = useState(1);
   const pageSize = 10;
-
-  // ✅ Reset only on search
-  useMemo(() => {
-    setCurrentPage(1);
-  }, [searchTerm]);
-
-  // ✅ Safe pagination
   const totalPages = Math.ceil(filteredLogs.length / pageSize);
   const currentPageSafe = Math.min(currentPage, totalPages || 1);
   const paginatedLogs = filteredLogs.slice(
@@ -141,7 +136,6 @@ export default function MessageLogs() {
     setConfirmOpen(true);
   };
 
-  // ✅ Clear All Logs
   const handleClearAllLogs = () => {
     setConfirmMessage("⚠️ Are you sure you want to delete ALL message logs?");
     setConfirmAction(() => async () => {
@@ -180,7 +174,7 @@ export default function MessageLogs() {
           </svg>
           <input
             type="text"
-            placeholder="Search by client or template..."
+            placeholder="Search by title, message, or status..."
             value={searchTerm}
             onChange={(e) => handleSearch(e.target.value)}
             className="flex-1 bg-transparent outline-none px-2"
@@ -211,7 +205,6 @@ export default function MessageLogs() {
             🗑 Delete {selectedIds.length > 0 && `(${selectedIds.length})`}
           </button>
 
-          {/* ✅ Clear All Button */}
           <button
             onClick={handleClearAllLogs}
             className="px-4 py-2 bg-yellow-500 text-white rounded hover:bg-yellow-600"
@@ -253,12 +246,12 @@ export default function MessageLogs() {
                   onChange={(e) =>
                     handleSelectAllPage(e.target.checked, paginatedLogs)
                   }
-                  className="w-4 h-4 align-middle"
                 />
               </th>
               <th className="px-6 py-3">ID</th>
-              <th className="px-6 py-3">Client</th>
-              <th className="px-6 py-3">Template</th>
+              <th className="px-6 py-3">Title</th>
+              <th className="px-6 py-3">Message</th>
+              <th className="px-6 py-3">Status</th>
               <th className="px-6 py-3">Created At</th>
               <th className="px-6 py-3">Sent At</th>
               <th className="px-6 py-3">Actions</th>
@@ -267,19 +260,19 @@ export default function MessageLogs() {
           <tbody className="divide-y divide-gray-100">
             {isLoading ? (
               <tr>
-                <td colSpan="7" className="p-6 text-center text-gray-500">
+                <td colSpan="8" className="p-6 text-center text-gray-500">
                   Loading...
                 </td>
               </tr>
             ) : isError ? (
               <tr>
-                <td colSpan="7" className="p-6 text-center text-red-500">
+                <td colSpan="8" className="p-6 text-center text-red-500">
                   Error loading logs.
                 </td>
               </tr>
             ) : paginatedLogs.length === 0 ? (
               <tr>
-                <td colSpan="7" className="p-6 text-center text-gray-500">
+                <td colSpan="8" className="p-6 text-center text-gray-500">
                   No logs found.
                 </td>
               </tr>
@@ -295,11 +288,25 @@ export default function MessageLogs() {
                     />
                   </td>
                   <td className="px-6 py-4">{log.id}</td>
-                  <td className="px-6 py-4">
-                    {log.client?.name || log.client_id}
+                  <td className="px-6 py-4 font-semibold">{log.title}</td>
+                  <td
+                    className="px-6 py-4 max-w-md truncate"
+                    title={log.message}
+                  >
+                    {log.message}
                   </td>
                   <td className="px-6 py-4">
-                    {log.template?.title || log.template_id}
+                    <span
+                      className={`px-2 py-1 rounded text-xs font-semibold ${
+                        log.status === "sent"
+                          ? "bg-green-100 text-green-700"
+                          : log.status === "failed"
+                          ? "bg-red-100 text-red-700"
+                          : "bg-gray-100 text-gray-700"
+                      }`}
+                    >
+                      {log.status}
+                    </span>
                   </td>
                   <td className="px-6 py-4">
                     {new Date(log.created_at).toLocaleString()}
@@ -324,53 +331,43 @@ export default function MessageLogs() {
 
       {/* ✅ Mobile Card View */}
       <div className="block sm:hidden space-y-4">
-        {isLoading ? (
-          <p className="text-center text-gray-500">Loading...</p>
-        ) : isError ? (
-          <p className="text-center text-red-500">Error loading logs.</p>
-        ) : paginatedLogs.length === 0 ? (
-          <p className="text-center text-gray-500">No logs found.</p>
-        ) : (
-          paginatedLogs.map((log) => (
-            <div
-              key={log.id}
-              className="bg-white rounded-lg shadow p-4 border border-gray-200"
-            >
-              <div className="flex justify-between items-start">
-                <div>
-                  <p className="font-semibold">
-                    {log.client?.name || log.client_id}
-                  </p>
-                  <p className="text-sm text-gray-600">ID: {log.id}</p>
-                  <p className="text-sm text-gray-600">
-                    Template: {log.template?.title || log.template_id}
-                  </p>
-                  <p className="text-xs text-gray-500">
-                    Created: {new Date(log.created_at).toLocaleString()}
-                  </p>
-                  <p className="text-xs text-gray-500">
-                    Sent:{" "}
-                    {log.sent_at ? new Date(log.sent_at).toLocaleString() : "-"}
-                  </p>
-                </div>
-                <input
-                  type="checkbox"
-                  checked={selectedIds.includes(log.id)}
-                  onChange={() => toggleSelection(log.id)}
-                  className="w-4 h-4 mt-1"
-                />
+        {paginatedLogs.map((log) => (
+          <div
+            key={log.id}
+            className="bg-white rounded-lg shadow p-4 border border-gray-200"
+          >
+            <div className="flex justify-between">
+              <div>
+                <p className="font-semibold">{log.title}</p>
+                <p className="text-sm text-gray-600 break-words">
+                  {log.message}
+                </p>
+                <p className="text-xs mt-2">
+                  Status: <span className="font-semibold">{log.status}</span>
+                </p>
+                <p className="text-xs text-gray-500">
+                  Created: {new Date(log.created_at).toLocaleString()}
+                </p>
+                <p className="text-xs text-gray-500">
+                  Sent:{" "}
+                  {log.sent_at ? new Date(log.sent_at).toLocaleString() : "-"}
+                </p>
               </div>
-              <div className="flex gap-3 mt-3 text-sm">
-                <button
-                  onClick={() => handleDeleteSingle(log.id)}
-                  className="text-red-600 hover:underline"
-                >
-                  Delete
-                </button>
-              </div>
+              <input
+                type="checkbox"
+                checked={selectedIds.includes(log.id)}
+                onChange={() => toggleSelection(log.id)}
+                className="w-4 h-4 mt-1"
+              />
             </div>
-          ))
-        )}
+            <button
+              onClick={() => handleDeleteSingle(log.id)}
+              className="mt-3 text-sm text-red-600 hover:underline"
+            >
+              Delete
+            </button>
+          </div>
+        ))}
       </div>
 
       {/* ✅ Global Pagination */}

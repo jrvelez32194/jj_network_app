@@ -11,7 +11,7 @@ from app.utils.billing import (
     handle_paid_client,
     handle_unpaid_client,
 )
-from app.utils.messenger import send_message
+from app.utils.messengerV2 import send_message
 from app.models import BillingStatus
 
 router = APIRouter()
@@ -179,9 +179,9 @@ async def set_paid(client_id: int, db: Session = Depends(get_db)):
             else:
                 msg = (
                     f"Hi {client.name}, we received your payment of {client.amt_monthly}.\n"
-                    "Thank you!"
+                    "✅ Thank you!"
                 )
-            send_message(client.messenger_id, msg)
+            send_message(db, client.messenger_id, "Payment Received", msg)
 
     await manager.broadcast({
         "event": "billing_update",
@@ -234,7 +234,7 @@ async def set_paid_bulk(client_ids: List[int], db: Session = Depends(get_db)):
                         f"Hi {c.name}, we received your payment of {c.amt_monthly}.\n"
                         "Thank you!"
                     )
-                send_message(c.messenger_id, msg)
+                send_message(db, c.messenger_id, "Payment Received Bulk", msg)
 
         updated_connection_names.add(client.connection_name)
         updated_clients.extend(shared_clients)

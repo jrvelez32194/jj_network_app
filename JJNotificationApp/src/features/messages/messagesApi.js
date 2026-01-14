@@ -5,12 +5,13 @@ export const messagesApi = apiSlice.injectEndpoints({
   endpoints: (builder) => ({
     // ✅ POST /messages/send with JSON body
     sendToClients: builder.mutation({
-      query: ({ template_id, client_ids }) => ({
+      query: ({ title, message, client_ids }) => ({
         url: "messages/send",
         method: "POST",
         body: {
-          template_id,
-          client_ids, // ✅ backend expects array of ints
+          title, // now sending actual title
+          message, // now sending actual message
+          client_ids, // still array of ints
         },
       }),
     }),

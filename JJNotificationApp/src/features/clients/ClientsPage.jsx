@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect, useRef } from "react";
 import { useDispatch } from "react-redux";
 import Pagination from "../../components/Pagination";
+
 import {
   useGetClientsQuery,
   useAddClientMutation,
@@ -13,12 +14,16 @@ import {
   useSetUnpaidBulkMutation,
   useSetUnpaidMutation,
 } from "../api/clientsApi";
+
 import { useSendToClientsMutation } from "../messages/messagesApi";
+
 import AddClientDrawer from "./AddClientDrawer";
 import ConfirmDialog from "../../components/ConfirmDialog";
 import SendDialog from "../../components/SendDialog";
 import { InfoDialog } from "../../components/InfoDialog";
+
 import { useWebSocketManager } from "../../hooks/useWebSocketManager";
+
 import StatusFilterGroup from "./components/StatusFilterGroup";
 import SearchBar from "./components/SearchBar";
 import SelectionControlsForDesktop from "./components/SelectionControlsForDesktop";
@@ -43,7 +48,6 @@ const ClientsPage = () => {
   const [sendClientIds, setSendClientIds] = useState([]);
 
   const [fabOpen, setFabOpen] = useState(false);
-
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilters, setStatusFilters] = useState({
     UP: false,
@@ -76,24 +80,22 @@ const ClientsPage = () => {
   const [setUnpaid] = useSetUnpaidMutation();
 
   // ----------------------------------------------------------
-  // 🧠 Utilities & Helpers
+  // 🧠 Utilities
   // ----------------------------------------------------------
   const { showToast, Toast } = InfoDialog();
   const dispatch = useDispatch();
   useWebSocketManager({ showToast, dispatch, refetch });
 
   // ----------------------------------------------------------
-  // 📊 Derived Data (Counts)
+  // 📊 Derived Data
   // ----------------------------------------------------------
   const upCount = clients.filter((c) => c.state === "UP").length;
   const downCount = clients.filter((c) => c.state === "DOWN").length;
   const unknownCombinedCount = clients.filter((c) => {
     const isStateUnknown = !["UP", "DOWN"].includes(c.state);
     const isBillingUnknown = !c.billing_date;
-    // Match the same logic as your UNKNOWN filter
     return isStateUnknown || isBillingUnknown;
   }).length;
-
   const unpaidCount = clients.filter((c) => c.status === "UNPAID").length;
   const limitedCount = clients.filter((c) => c.status === "LIMITED").length;
   const cutoffCount = clients.filter((c) => c.status === "CUTOFF").length;
@@ -102,16 +104,10 @@ const ClientsPage = () => {
   // 🔍 Filtering & Search
   // ----------------------------------------------------------
   const toggleFilter = (key) => {
-    setStatusFilters((prev) => ({
-      ...prev,
-      [key]: !prev[key],
-    }));
+    setStatusFilters((prev) => ({ ...prev, [key]: !prev[key] }));
   };
 
-  const handleSearch = (value) => {
-    setSearchTerm(value);
-    // Removed setCurrentPage(1) here
-  };
+  const handleSearch = (value) => setSearchTerm(value);
 
   const filteredClients = useMemo(() => {
     let result = clients;
@@ -120,7 +116,7 @@ const ClientsPage = () => {
       const terms = searchTerm
         .split(",")
         .map((t) => t.trim().toLowerCase())
-        .filter((t) => t.length > 0);
+        .filter(Boolean);
 
       const groupTerms = terms.filter((term) =>
         clients.some((c) => c.group_name?.toLowerCase() === term)
@@ -129,41 +125,44 @@ const ClientsPage = () => {
 
       result = result.filter((c) => {
         const billingDate = c.billing_date
-          ? new Date(c.billing_date).toISOString().split("T")[0].toLowerCase()
+          ? new Date(c.billing_date).toISOString().split("T")[0]
           : "";
-        const id = c.id?.toString().toLowerCase() || "";
-        const name = c.name?.toLowerCase() || "";
-        const messenger_id = c.messenger_id?.toLowerCase() || "";
-        const group_name = c.group_name?.toLowerCase() || "";
-        const connection_name = c.connection_name?.toLowerCase() || "";
-        const state = c.state?.toLowerCase() || "";
-        const status = c.status?.toLowerCase() || "";
+        const id = c.id?.toString() || "";
+        const name = c.name || "";
+        const messenger_id = c.messenger_id || "";
+        const group_name = c.group_name || "";
+        const connection_name = c.connection_name || "";
+        const state = c.state || "";
+        const status = c.status || "";
 
         if (groupTerms.length > 0) {
-          if (!groupTerms.includes(group_name)) return false;
-          if (otherTerms.length === 0) return true;
-          return otherTerms.some(
-            (term) =>
-              id.includes(term) ||
-              name.includes(term) ||
-              messenger_id.includes(term) ||
-              connection_name.includes(term) ||
-              state.includes(term) ||
-              status.includes(term) ||
-              billingDate.includes(term)
+          if (!groupTerms.includes(group_name.toLowerCase())) return false;
+          if (!otherTerms.length) return true;
+
+          return otherTerms.some((term) =>
+            [
+              id,
+              name,
+              messenger_id,
+              connection_name,
+              state,
+              status,
+              billingDate,
+            ].some((v) => v.toLowerCase().includes(term))
           );
         }
 
-        return terms.some(
-          (term) =>
-            id.includes(term) ||
-            name.includes(term) ||
-            messenger_id.includes(term) ||
-            connection_name.includes(term) ||
-            group_name.includes(term) ||
-            state.includes(term) ||
-            status.includes(term) ||
-            billingDate.includes(term)
+        return terms.some((term) =>
+          [
+            id,
+            name,
+            messenger_id,
+            group_name,
+            connection_name,
+            state,
+            status,
+            billingDate,
+          ].some((v) => v.toLowerCase().includes(term))
         );
       });
     }
@@ -172,14 +171,13 @@ const ClientsPage = () => {
       .filter(([_, v]) => v)
       .map(([k]) => k);
 
-    if (activeFilters.length > 0) {
+    if (activeFilters.length) {
       result = result.filter((c) => {
         const matchState = activeFilters.includes(c.state);
         const matchStatus = activeFilters.includes(c.status);
         const isUnknown =
           activeFilters.includes("UNKNOWN") &&
           (!["UP", "DOWN"].includes(c.state) || !c.billing_date);
-
         return matchState || matchStatus || isUnknown;
       });
     }
@@ -188,11 +186,9 @@ const ClientsPage = () => {
   }, [clients, searchTerm, statusFilters]);
 
   // ----------------------------------------------------------
-  // 📄 Pagination Fix
+  // 📄 Pagination
   // ----------------------------------------------------------
   const totalPages = Math.ceil(filteredClients.length / pageSize);
-
-  // Keep track of previous search/filter values
   const prevSearchRef = useRef("");
   const prevFiltersRef = useRef(statusFilters);
 
@@ -207,7 +203,6 @@ const ClientsPage = () => {
     }
   }, [searchTerm, statusFilters]);
 
-  // Reset page if currentPage exceeds totalPages
   useEffect(() => {
     if (currentPage > totalPages) setCurrentPage(totalPages || 1);
   }, [totalPages, currentPage]);
@@ -225,33 +220,28 @@ const ClientsPage = () => {
         ? prev.filter((x) => x !== id)
         : [...prev, id];
 
-      if (allSelected && !newSelected.includes(id)) {
-        setAllSelected(false);
-      }
+      if (allSelected && !newSelected.includes(id)) setAllSelected(false);
 
       return newSelected;
     });
   };
 
   const handleSelectAllPage = (checked, pageClients) => {
-    if (checked) {
-      const pageIds = pageClients.map((c) => c.id);
-      setSelectedIds((prev) => [...new Set([...prev, ...pageIds])]);
-    } else {
-      const pageIds = pageClients.map((c) => c.id);
-      setSelectedIds((prev) => prev.filter((id) => !pageIds.includes(id)));
-    }
+    const pageIds = pageClients.map((c) => c.id);
+    setSelectedIds((prev) =>
+      checked
+        ? [...new Set([...prev, ...pageIds])]
+        : prev.filter((id) => !pageIds.includes(id))
+    );
   };
 
   const handleSelectAllAcrossPages = () => {
-    const allFilteredIds = filteredClients.map((c) => c.id);
-    setSelectedIds(allFilteredIds);
+    setSelectedIds(filteredClients.map((c) => c.id));
     setAllSelected(true);
   };
 
   const handleSelectAll = () => {
-    const allIds = clients.map((c) => c.id);
-    setSelectedIds(allIds);
+    setSelectedIds(clients.map((c) => c.id));
     setAllSelected(true);
   };
 
@@ -265,12 +255,8 @@ const ClientsPage = () => {
   // ----------------------------------------------------------
   const handleSaveClient = async (clientData) => {
     try {
-      if (!clientData.group_name) {
-        clientData.group_name = "G1";
-      }
-      if (!clientData.connection_name) {
-        clientData.connection_name = null;
-      }
+      clientData.group_name ||= "G1";
+      clientData.connection_name ||= null;
 
       if (editingClient) {
         await updateClient({ id: editingClient.id, ...clientData }).unwrap();
@@ -279,6 +265,7 @@ const ClientsPage = () => {
         await addClient(clientData).unwrap();
         showToast("Client added ✅");
       }
+
       setIsDrawerOpen(false);
       setEditingClient(null);
     } catch (err) {
@@ -303,7 +290,7 @@ const ClientsPage = () => {
   };
 
   const handleBulkDelete = () => {
-    if (selectedIds.length === 0) return;
+    if (!selectedIds.length) return;
     setConfirmMessage(
       `Are you sure you want to delete ${selectedIds.length} clients?`
     );
@@ -326,7 +313,7 @@ const ClientsPage = () => {
   // ----------------------------------------------------------
   const handleSetPaid = async (id) => {
     try {
-      await setPaid([id]).unwrap(); // send single id as array
+      await setPaid([id]).unwrap();
       showToast("Client marked as PAID ✅");
     } catch {
       showToast("Failed to set paid ❌", "error");
@@ -334,7 +321,7 @@ const ClientsPage = () => {
   };
 
   const handleBulkSetPaid = async () => {
-    if (selectedIds.length === 0) return;
+    if (!selectedIds.length) return;
     try {
       await setPaidBulk(selectedIds).unwrap();
       showToast(`✅ Set ${selectedIds.length} clients to PAID`);
@@ -346,7 +333,7 @@ const ClientsPage = () => {
 
   const handleSetUnpaid = async (id) => {
     try {
-      await setUnpaid([id]).unwrap(); // single id as array
+      await setUnpaid([id]).unwrap();
       showToast("Client marked as UNPAID ❌");
     } catch {
       showToast("Failed to set unpaid ❌", "error");
@@ -354,7 +341,7 @@ const ClientsPage = () => {
   };
 
   const handleBulkSetUnpaid = async () => {
-    if (selectedIds.length === 0) return;
+    if (!selectedIds.length) return;
     try {
       await setUnpaidBulk(selectedIds).unwrap();
       showToast(`❌ Set ${selectedIds.length} clients to UNPAID`);
@@ -363,29 +350,31 @@ const ClientsPage = () => {
       showToast("❌ Failed to update billing status", "error");
     }
   };
+
   // ----------------------------------------------------------
   // ✉️ Messaging
   // ----------------------------------------------------------
   const handleOpenSend = () => {
-    if (selectedIds.length === 0) return;
+    if (!selectedIds.length) return;
     setSendClientIds(selectedIds);
     setSendOpen(true);
   };
 
-  const handleSend = async (templateId) => {
-    try {
-      const numericIds = sendClientIds.map((id) => Number(id));
-      await sendToClients({
-        template_id: templateId,
-        client_ids: numericIds,
-      }).unwrap();
+  const handleSend = async ({ title, message }) => {
+    if (!title || !message)
+      return showToast("Title and message are required", "error");
 
-      showToast("Messages sent successfully!");
+    try {
+      const numericIds = sendClientIds.map(Number);
+
+      await sendToClients({ title, message, client_ids: numericIds }).unwrap();
+
+      showToast("Messages sent successfully ✅");
       setSendOpen(false);
       setSendClientIds([]);
-    } catch (error) {
-      console.error("Send error:", error);
-      showToast("Failed to send messages", "error");
+    } catch (err) {
+      console.error("Send error:", err);
+      showToast("Failed to send messages ❌", "error");
     }
   };
 
@@ -401,97 +390,62 @@ const ClientsPage = () => {
     }
   };
 
-  // ✅ Helper: Format date safely
+  // ----------------------------------------------------------
+  // 📆 Helpers
+  // ----------------------------------------------------------
   const formatDate = (dateString) => {
     if (!dateString) return "N/A";
     const d = new Date(dateString);
-    if (isNaN(d.getTime())) return "N/A";
-    return d.toISOString().split("T")[0]; // YYYY-MM-DD
+    return isNaN(d.getTime()) ? "N/A" : d.toISOString().split("T")[0];
   };
 
-  // ----------------------------------------------------------
-  // 🖼️ Render
-  // ----------------------------------------------------------
   const renderStatus = (state) => {
-    if (state === "UP") {
-      return (
-        <div className="flex items-center gap-1">
-          <span className="w-2.5 h-2.5 rounded-full bg-green-500 animate-pulse"></span>
-          <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-green-100 text-green-700">
-            UP
-          </span>
-        </div>
-      );
-    }
-    if (state === "DOWN") {
-      return (
-        <div className="flex items-center gap-1">
-          <span className="w-2.5 h-2.5 rounded-full bg-red-500 animate-pulse"></span>
-          <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-red-100 text-red-700">
-            DOWN
-          </span>
-        </div>
-      );
-    }
+    const map = {
+      UP: ["green-500", "green-100", "green-700"],
+      DOWN: ["red-500", "red-100", "red-700"],
+      UNKNOWN: ["gray-400", "gray-100", "gray-700"],
+    };
+    const [dot, bg, text] = map[state] || map.UNKNOWN;
+
     return (
       <div className="flex items-center gap-1">
-        <span className="w-2.5 h-2.5 rounded-full bg-gray-400"></span>
-        <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-gray-100 text-gray-700">
-          UNKNOWN
+        <span
+          className={`w-2.5 h-2.5 rounded-full bg-${dot} animate-pulse`}
+        ></span>
+        <span
+          className={`px-2 py-0.5 rounded-full text-xs font-semibold bg-${bg} text-${text}`}
+        >
+          {state}
         </span>
       </div>
     );
   };
 
-  // 🎨 Render billing status badges (PAID, UNPAID, LIMITED, CUTOFF)
   const renderBillingStatus = (status) => {
     const base =
       "px-2 py-1 text-xs font-semibold rounded-full flex items-center gap-1 w-fit";
+    const map = {
+      PAID: ["green-500", "green-100", "green-700"],
+      UNPAID: ["yellow-400", "yellow-100", "yellow-700"],
+      LIMITED: ["orange-400", "orange-100", "orange-700"],
+      CUTOFF: ["red-600", "red-200", "red-800"],
+      UNKNOWN: ["gray-400", "gray-100", "gray-700"],
+    };
+    const [dot, bg, text] = map[status] || map.UNKNOWN;
 
-    switch (status) {
-      case "PAID":
-        return (
-          <span className={`${base} bg-green-100 text-green-700`}>
-            <span className="w-2 h-2 bg-green-500 rounded-full"></span>
-            PAID
-          </span>
-        );
-      case "UNPAID":
-        return (
-          <span className={`${base} bg-yellow-100 text-yellow-700`}>
-            <span className="w-2 h-2 bg-yellow-400 rounded-full"></span>
-            UNPAID
-          </span>
-        );
-      case "LIMITED":
-        return (
-          <span className={`${base} bg-orange-100 text-orange-700`}>
-            <span className="w-2 h-2 bg-orange-400 rounded-full"></span>
-            LIMITED
-          </span>
-        );
-      case "CUTOFF":
-        return (
-          <span className={`${base} bg-red-200 text-red-800`}>
-            <span className="w-2 h-2 bg-red-600 rounded-full"></span>
-            CUTOFF
-          </span>
-        );
-      default:
-        return (
-          <span className={`${base} bg-gray-100 text-gray-700`}>
-            <span className="w-2 h-2 bg-gray-400 rounded-full"></span>
-            UNKNOWN
-          </span>
-        );
-    }
+    return (
+      <span className={`${base} bg-${bg} text-${text}`}>
+        <span className={`w-2 h-2 bg-${dot} rounded-full`}></span>
+        {status}
+      </span>
+    );
   };
 
+  // ----------------------------------------------------------
+  // 🖼️ Render
+  // ----------------------------------------------------------
   return (
     <div className="p-4 max-w-6xl mx-auto pb-28">
-      {/* ------------------------------------------------------
-        🧭 Dashboard Summary
-      ------------------------------------------------------ */}
       <StatusFilterGroup
         statusFilters={statusFilters}
         toggleFilter={toggleFilter}
@@ -503,10 +457,8 @@ const ClientsPage = () => {
         cutoffCount={cutoffCount}
       />
 
-      {/* ✅ Search */}
       <SearchBar value={searchTerm} onSearch={handleSearch} />
 
-      {/* ✅ Selection controls remain for Desktop */}
       <SelectionControlsForDesktop
         selectedIds={selectedIds}
         paginatedClients={paginatedClients}
@@ -519,7 +471,6 @@ const ClientsPage = () => {
         clearAllSelection={clearAllSelection}
       />
 
-      {/* ✅ Mobile Selection Controls */}
       <MobileSelectionBar
         paginatedClients={paginatedClients}
         selectedIds={selectedIds}
@@ -532,7 +483,6 @@ const ClientsPage = () => {
         clearAllSelection={clearAllSelection}
       />
 
-      {/* ✅ Toolbar (Desktop) */}
       <ClientToolbar
         selectedIds={selectedIds}
         handleBulkDelete={handleBulkDelete}
@@ -545,7 +495,6 @@ const ClientsPage = () => {
         setIsDrawerOpen={setIsDrawerOpen}
       />
 
-      {/* ✅ Desktop Table */}
       <ClientTable
         paginatedClients={paginatedClients}
         selectedIds={selectedIds}
@@ -562,7 +511,6 @@ const ClientsPage = () => {
         setIsDrawerOpen={setIsDrawerOpen}
       />
 
-      {/* ✅ Floating Action Button Menu (Mobile Only) */}
       <FloatingActionMenu
         fabOpen={fabOpen}
         setFabOpen={setFabOpen}
@@ -576,7 +524,6 @@ const ClientsPage = () => {
         setIsDrawerOpen={setIsDrawerOpen}
       />
 
-      {/* ✅ Mobile Card View */}
       <MobileClientCards
         paginatedClients={paginatedClients}
         selectedIds={selectedIds}
@@ -591,7 +538,6 @@ const ClientsPage = () => {
         setIsDrawerOpen={setIsDrawerOpen}
       />
 
-      {/* ✅ Global Pagination */}
       <Pagination
         totalItems={filteredClients.length}
         pageSize={pageSize}
@@ -599,7 +545,6 @@ const ClientsPage = () => {
         setCurrentPage={setCurrentPage}
       />
 
-      {/* ✅ Modals */}
       <AddClientDrawer
         isOpen={isDrawerOpen}
         onClose={() => {
@@ -624,6 +569,7 @@ const ClientsPage = () => {
         isOpen={sendOpen}
         onClose={() => setSendOpen(false)}
         onSend={handleSend}
+        selectedClientIds={sendClientIds} // ✅ FIX
       />
 
       <Toast />

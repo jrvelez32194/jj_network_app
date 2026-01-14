@@ -45,11 +45,8 @@ export default function SendDialog({
     const exactMatch = templates.find(
       (t) => t.title.toLowerCase() === searchTerm.toLowerCase()
     );
-    if (exactMatch) {
-      setTemplateId(exactMatch.id.toString());
-    } else {
-      setTemplateId(""); // reset if no exact match
-    }
+    if (exactMatch) setTemplateId(exactMatch.id.toString());
+    else setTemplateId("");
   }, [searchTerm, templates]);
 
   // ✅ Load template content when selecting
@@ -58,23 +55,20 @@ export default function SendDialog({
     setTemplateTitle(selected?.title || "");
     setTemplateContent(selected?.content || "");
 
-    // ✅ When user selects manually, sync search box
     if (selected && searchTerm.toLowerCase() !== selected.title.toLowerCase()) {
       setSearchTerm(selected.title);
     }
   }, [templateId, templates]);
 
-  // ✅ Send button logic
+  // ✅ Send button logic aligned with backend
   const handleSend = async () => {
     if (!templateContent.trim())
       return alert("Message content cannot be empty");
 
     setIsSending(true);
     try {
-      let finalTemplateId = templateId;
-
+      // Optionally create or update template
       if (templateId) {
-        // 🟦 Update existing template if edited
         const original = templates.find((t) => t.id === Number(templateId));
         if (
           original &&
@@ -87,21 +81,22 @@ export default function SendDialog({
             content: templateContent,
           }).unwrap();
         }
-      } else {
-        // 🟩 Create new template if none selected
-        const title =
-          templateTitle ||
-          prompt("Enter title for new template:") ||
-          "New Template";
+      } else if (templateTitle.trim()) {
+        // Create new template if user provided a title
         const newTemplate = await addTemplate({
-          title,
+          title: templateTitle,
           content: templateContent,
         }).unwrap();
-        finalTemplateId = newTemplate.id;
+        setTemplateId(newTemplate.id.toString());
       }
 
-      // 📨 Send message
-      await onSend(Number(finalTemplateId), selectedClientIds, templateContent);
+      // ✅ Send to backend using title & message
+      await onSend({
+        title: templateTitle || "No Title",
+        message: templateContent,
+        client_ids: selectedClientIds.map((id) => Number(id)),
+      });
+
       onClose();
     } catch (err) {
       console.error("Failed to send or update:", err);
@@ -137,7 +132,6 @@ export default function SendDialog({
               placeholder="Search template..."
               className="w-full border rounded-lg p-2 mb-2 focus:ring-2 focus:ring-blue-600"
             />
-
             <select
               value={templateId}
               onChange={(e) => setTemplateId(e.target.value)}
@@ -171,7 +165,7 @@ export default function SendDialog({
         <textarea
           value={templateContent}
           onChange={(e) => setTemplateContent(e.target.value)}
-          placeholder="Write or edit your message here..."
+          placeholder="Write your message here..."
           rows={6}
           className="w-full border rounded-lg p-2 mb-4 focus:ring-2 focus:ring-blue-600"
         />

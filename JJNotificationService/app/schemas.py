@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 from datetime import datetime, date
 from enum import Enum
 
@@ -100,15 +100,17 @@ class TemplateResponse(TemplateBase):
 # 🚀 Message Logs
 # ===============================
 class MessageLogResponse(BaseModel):
-    id: int
-    client_id: int
-    template_id: Optional[int]
-    status: str
-    created_at: datetime
-    sent_at: Optional[datetime]
+  id: int
+  title: str
+  message: str
+  status: str
+  created_at: datetime
+  sent_at: Optional[datetime]
 
-    client: Optional[ClientResponse] = None
-    template: Optional[TemplateResponse] = None
+  class Config:
+    orm_mode = True
 
-    class Config:
-        orm_mode = True
+class SendRequest(BaseModel):
+  title: str
+  message: str
+  client_ids: List[int]

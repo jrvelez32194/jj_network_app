@@ -11,7 +11,7 @@ from collections import defaultdict
 from app.models import Client, BillingStatus
 from app.utils.mikrotik_config import MikroTikClient
 from app.websocket_manager import manager
-from app.utils.messenger import send_message
+from app.utils.messengerV2 import send_message
 from app.utils.messages import get_messages, safe_format
 
 logger = logging.getLogger("billing")
@@ -132,7 +132,7 @@ def enforce_billing_rules(
         msg_text = safe_format(admin_msgs[notice_type], **kwargs)
 
         for admin in admins:
-          send_message(admin.messenger_id, msg_text)
+          send_message(db, admin.messenger_id, f"📨 Mirrored {notice_type}" , msg_text)
           logger.info(
             f"📨 Mirrored {notice_type} to {admin.connection_name} "
             f"(group={admin.group_name}) for [{client_identifier}]."
@@ -160,7 +160,7 @@ def enforce_billing_rules(
           amount=amount_value,
           payment_location=payment_location,
         )
-        send_message(client.messenger_id, message_text)
+        send_message(db, client.messenger_id, f"DUE notice sent to {name_to_show}", message_text)
         logger.info(f"📩 [{name_to_show}] DUE notice sent.")
 
         mirror_to_admin(
@@ -186,7 +186,7 @@ def enforce_billing_rules(
           client_display=name_to_show,
           payment_location=payment_location,
         )
-        send_message(client.messenger_id, throttle_msg)
+        send_message(db, client.messenger_id, "Throttle notice", throttle_msg)
         logger.info(f"📩 [{name_to_show}] Throttle notice sent.")
 
         mirror_to_admin(
@@ -213,7 +213,7 @@ def enforce_billing_rules(
           client_display=name_to_show,
           payment_location=payment_location,
         )
-        send_message(client.messenger_id, disconnection_msg)
+        send_message(db, client.messenger_id, "Disconnection notice", disconnection_msg)
         logger.info(f"📩 [{name_to_show}] Disconnection notice sent.")
 
         mirror_to_admin(

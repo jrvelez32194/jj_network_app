@@ -86,17 +86,22 @@ class Template(Base):
 
 
 # ===============================
-# 🚀 Message Logs
+# 🚀 Message Logs (Decoupled)
 # ===============================
 class MessageLog(Base):
     __tablename__ = "message_logs"
 
     id = Column(Integer, primary_key=True, index=True)
-    client_id = Column(Integer, ForeignKey("clients.id"))
-    template_id = Column(Integer, ForeignKey("templates.id"))
-    status = Column(String, default="pending")
-    created_at = Column(DateTime(timezone=True), server_default=func.now())  # when row created
-    sent_at = Column(DateTime(timezone=True), nullable=True)  # when actually sent
 
-    client = relationship("Client")
-    template = relationship("Template")
+    # Snapshot fields (NO FK)
+    title = Column(String, nullable=False)
+    message = Column(Text, nullable=False)
+
+    status = Column(String, default="pending", nullable=False)
+
+    created_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False
+    )
+    sent_at = Column(DateTime(timezone=True), nullable=True)

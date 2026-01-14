@@ -7,10 +7,11 @@ from typing import List, Optional
 
 from sqlalchemy.orm import Session
 
+from app.database import get_db
 from app.models import Client, ClientStateHistory
 from app.schemas import ConnectionState, BillingStatus
 from app.services.template_service import get_template
-from app.utils.messenger import send_message
+from app.utils.messengerV2 import send_message
 
 logger = logging.getLogger("notification_service")
 
@@ -77,7 +78,8 @@ def _queue_worker_loop():
                         break  # no more messages
 
                     try:
-                        send_message(client.messenger_id, content)
+                        db = next(get_db())
+                        send_message(db, client.messenger_id, f"From {client.connection_name}" , content)
                         logger.info("[%s] Sent → %s (%s)", group, client.name, client.connection_name)
                     except Exception:
                         logger.exception("[%s] Failed to send message to %s", group, client.name)
