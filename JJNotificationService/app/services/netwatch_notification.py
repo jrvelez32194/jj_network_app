@@ -194,9 +194,20 @@ def dispatch_notification(db: Session, client: Client, prefix: str, content: str
         notify_all_under_group(db, content, group)
         return
 
-    enqueue_message(client, content, group)
-    notify_admin_deduped(db, content, group, client.connection_name, prefix, state)
+    client_content = content
 
+    if prefix in {PRIVATE_KEYWORD, VENDO_KEYWORD}:
+        placeholder = PLACEHOLDER_REPLACEMENTS.get(prefix)
+        if placeholder:
+            replacement = (
+                f"Your {client.connection_name}"
+                if prefix == PRIVATE_KEYWORD
+                else client.connection_name
+            )
+            client_content = content.replace(placeholder, replacement)
+
+    enqueue_message(client, client_content, group)
+    notify_admin_deduped(db, content, group, client.connection_name, prefix, state)
 
 # ============================================================
 # Queue helpers
